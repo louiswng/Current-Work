@@ -2,20 +2,20 @@ import torch as t
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 from Params import args
-from Model import Our
+from Model import Our, SpAdjDropEdge
 from DataHandler import DataHandler, negSamp
 import numpy as np
 import pickle
 import nni
 from nni.utils import merge_parameter
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
+import os
 
 # writer = SummaryWriter(log_dir='runs')
 
 class Recommender:
-    def __init__(self, handler, device):
+    def __init__(self, handler):
         self.handler = handler
-        self.device = device
         print('USER', args.user, 'ITEM', args.item)
         print('NUM OF INTERACTIONS', len(self.handler.trnMat.data))
         print('NUM OF USER-USER EDGE', args.uuEdgeNum)
@@ -46,6 +46,8 @@ class Recommender:
         else:
             stloc = 0
             log('Model Initialized')
+        
+        best_acc = 0.0
         for ep in range(stloc, args.epoch):
             tstFlag = (ep % args.tstEpoch == 0)
             reses = self.trainEpoch()
@@ -53,6 +55,15 @@ class Recommender:
             log(self.makePrint('Train', ep, reses, tstFlag))
             if tstFlag:
                 reses = self.testEpoch()
+                if reses['Recall'] > best_acc:
+                    best_acc = reses['Recall']
+                    best_acc2 = reses['NDCG']
+                    es = 0
+                else:
+                    es += 1
+                    if es >= args.patience:
+                        print("Early stopping with best Recall and NDCG is", best_acc, best_acc2)
+                        break
                 # writer.add_scalar('Recall/test', reses['Recall'], ep)
                 # writer.add_scalar('Ndcg/test', reses['NDCG'], ep)
                 nni.report_intermediate_result(reses['Recall'])
@@ -60,17 +71,19 @@ class Recommender:
                 self.saveHistory()
             self.sche.step()
             print()
-        reses = self.testEpoch()
-        nni.report_final_result(reses['Recall'])
+        # reses = self.testEpoch()
+        nni.report_final_result(best_acc)
         log(self.makePrint('Test', args.epoch, reses, True))
         self.saveHistory()
 
     def prepareModel(self):
-        self.model = Our(self.device).to(self.device)
+        self.model = Our().cuda()
+        self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).cuda()
         self.opt = t.optim.Adam(self.model.parameters(), lr=args.lr)
         self.sche = t.optim.lr_scheduler.ExponentialLR(self.opt, gamma=args.decay)
 
     def sampleTrainBatch(self, batIds, labelMat, otherNum, edgeNum):
+        labelMat = labelMat.tocsr()
         temLabel = labelMat[batIds].toarray()
         batch = len(batIds)
         temlen = batch * 2 * args.sampNum
@@ -101,6 +114,14 @@ class Recommender:
             edgeSampNum += 1
         edgeids = np.random.choice(edgeNum, edgeSampNum)
         return uLocs, iLocs, edgeids
+        
+    def calcSSL(self, embeds1, embeds2, nodes):
+        pckEmbeds1 = F.normalize(embeds1[nodes], 2)
+        pckEmbeds2 = F.normalize(embeds2[nodes], 2)
+        nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp)
+        deno = t.sum(t.exp(t.mm(pckEmbeds1, t.transpose(embeds2, 0, 1)) / args.temp), axis=-1)
+        ssl = t.sum(- t.log(nume / deno))
+        return ssl
 
     def trainEpoch(self):
         num = args.user
@@ -117,6 +138,9 @@ class Recommender:
             ed = min((i+1) * args.batch, num)
             batIds = sfIds[st: ed]
 
+            adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj)
+            adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
+
             uLocs, iLocs, edgeids = self.sampleTrainBatch(batIds, self.handler.trnMat, args.item, args.edgeNum)
             uu_Locs1, uu_Locs2, uu_edgeids = self.sampleTrainBatch(batIds, self.handler.uuMat, args.user, args.uuEdgeNum)
             preds, uuPreds, ssuLoss = self.model(adj, tpAdj, uAdj, uLocs, iLocs, edgeids, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
@@ -130,7 +154,6 @@ class Recommender:
             posPred = uuPreds[:sampNum]
             negPred = uuPreds[sampNum:]
             uuPreLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
-            uuPreLoss = t.tensor(0.0)
             uuPreLoss = args.lambda_u *  uuPreLoss           
             
             regLoss = 0
@@ -168,8 +191,8 @@ class Recommender:
         with t.no_grad():
             for usr, trnMask in tstLoader:
                 i += 1
-                usr = usr.long().to(self.device)
-                trnMask = trnMask.to(self.device)
+                usr = usr.long().cuda()
+                trnMask = trnMask.cuda()
 
                 topLocs = self.model.test(usr, trnMask)
 
@@ -225,7 +248,8 @@ class Recommender:
 
 if __name__ == '__main__':
     logger.saveDefault = True
-    device = "cuda:1" if t.cuda.is_available() else "cpu"
+    # os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+    device = "cuda" if t.cuda.is_available() else "cpu"
     print(f"Using {device} device")
 
     # get parameters form tuner
@@ -234,9 +258,9 @@ if __name__ == '__main__':
     print(params)
     
     log('Start')
-    handler = DataHandler(device)
+    handler = DataHandler()
     handler.LoadData()
     log('Load Data')
     
-    recom = Recommender(handler, device)
+    recom = Recommender(handler)
     recom.run()

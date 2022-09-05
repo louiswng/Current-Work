@@ -24,7 +24,7 @@ def transpose(mat):
 	return csr_matrix(coomat.transpose())
 
 class DataHandler:
-	def __init__(self, device):
+	def __init__(self):
 		if args.data == 'yelp':
 			predir = 'Data/yelp/'
 		elif args.data == 'tmall':
@@ -32,7 +32,6 @@ class DataHandler:
 		elif args.data == 'gowalla':
 			predir = 'Data/gowalla/'
 		self.predir = predir
-		self.device = device
 		self.trnfile = predir + 'trnMat_new.pkl'
 		self.tstfile = predir + 'tstMat_new.pkl'
 		self.uufile = predir + 'uuMat_new.pkl'
@@ -76,10 +75,18 @@ class DataHandler:
 			data = np.array([0.0], np.float32)
 		return indices, data, shape
 
+	def normalizeAdj(self, mat):
+		degree = np.array(mat.sum(axis=-1))
+		dInvSqrt = np.reshape(np.power(degree, -0.5), [-1])
+		dInvSqrt[np.isinf(dInvSqrt)] = 0.0
+		dInvSqrtMat = sp.diags(dInvSqrt)
+		return mat.dot(dInvSqrtMat).transpose().dot(dInvSqrtMat).tocoo()
+
 	def makeTorchAdj(self, mat):
 		# make ui adj
-		a = sp.csr_matrix((args.user, args.user))
-		b = sp.csr_matrix((args.item, args.item))
+		num1, num2 = mat.shape
+		a = sp.csr_matrix((num1, num1))
+		b = sp.csr_matrix((num2, num2))
 		mat = sp.vstack([sp.hstack([a, mat]), sp.hstack([mat.transpose(), b])])
 		mat = (mat != 0) * 1.0
 		mat = (mat + sp.eye(mat.shape[0])) * 1.0
@@ -89,25 +96,28 @@ class DataHandler:
 		idxs = t.from_numpy(np.vstack([mat.row, mat.col]).astype(np.int64))
 		vals = t.from_numpy(mat.data.astype(np.float32))
 		shape = t.Size(mat.shape)
-		return t.sparse.FloatTensor(idxs, vals, shape).to(self.device)
+		return t.sparse.FloatTensor(idxs, vals, shape).cuda()
 
 	def LoadData(self):
-		trnMat = self.LoadOneFile(self.trnfile).tocsr()
+		trnMat = self.LoadOneFile(self.trnfile)
 		tstMat = self.LoadOneFile(self.tstfile)
-		uuMat = self.LoadOneFile(self.uufile).tocsr()
+		uuMat = self.LoadOneFile(self.uufile)
 		args.user, args.item = trnMat.shape
+		
+		# self.torchAdj = self.makeTorchAdj(trnMat)
+
 		idx, data, shape = self.transToLsts(trnMat, norm=True)
 		idx = t.t(t.from_numpy(idx.astype(np.int64)))
 		data = t.from_numpy(data.astype(np.float32))
 		shape = t.Size(shape)
-		self.torchAdj = t.sparse.FloatTensor(idx, data, shape).to(self.device)
-		self.torchTpAdj = t.transpose(self.torchAdj, 0, 1).to(self.device)
+		self.torchAdj = t.sparse.FloatTensor(idx, data, shape).cuda()
+		self.torchTpAdj = t.transpose(self.torchAdj, 0, 1).cuda()
 		
 		idx, data, shape = self.transToLsts(uuMat, norm=True)
 		idx = t.t(t.from_numpy(idx.astype(np.int64)))
 		data = t.from_numpy(data.astype(np.float32))
 		shape = t.Size(shape)
-		self.torchuAdj = t.sparse.FloatTensor(idx, data, shape).to(self.device)
+		self.torchuAdj = t.sparse.FloatTensor(idx, data, shape).cuda()
 
 		self.trnMat = trnMat
 		self.uuMat = uuMat

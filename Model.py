@@ -6,20 +6,19 @@ xavierInit = nn.init.xavier_uniform_
 zeroInit = lambda x: nn.init.constant_(x, 0.0)
 
 class Our(nn.Module):
-    def __init__(self, device):
+    def __init__(self):
         super(Our, self).__init__()
-        self.device = device
         self.uEmbeds0 = nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
         self.iEmbeds0 = nn.Parameter(xavierInit(t.empty(args.item, args.latdim)))
-        self.LightGCN = LightGCN(self.uEmbeds0, self.iEmbeds0).to(self.device)
-        self.LightGCN2 = LightGCN2(self.uEmbeds0).to(self.device)
-        self.prepareKey1 = prepareKey().to(self.device)
-        self.prepareKey2 = prepareKey().to(self.device)
-        self.prepareKey3 = prepareKey().to(self.device)
-        self.HypergraphTransormer1 = HypergraphTransormer().to(self.device)
-        self.HypergraphTransormer2 = HypergraphTransormer().to(self.device)
-        self.HypergraphTransormer3 = HypergraphTransormer().to(self.device)
-        self.label = LabelNetwork().to(self.device)
+        self.LightGCN = LightGCN(self.uEmbeds0, self.iEmbeds0).cuda()
+        self.LightGCN2 = LightGCN2(self.uEmbeds0).cuda()
+        self.prepareKey1 = prepareKey().cuda()
+        self.prepareKey2 = prepareKey().cuda()
+        self.prepareKey3 = prepareKey().cuda()
+        self.HypergraphTransormer1 = HypergraphTransormer().cuda()
+        self.HypergraphTransormer2 = HypergraphTransormer().cuda()
+        self.HypergraphTransormer3 = HypergraphTransormer().cuda()
+        self.label = LabelNetwork().cuda()
         
     def forward(self, adj, tpAdj, uAdj, uids, iids, edgeids, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
         ui_uEmbed_gcn, ui_iEmbed_gcn = self.LightGCN(adj, tpAdj) # (usr, d)
@@ -61,8 +60,7 @@ class Our(nn.Module):
         fstPreds = _uu_preds[:halfNum]
         scdPreds = _uu_preds[halfNum:]
         ssuLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * args.mult * (fstScores-scdScores)))
-        ssuLoss = t.tensor(0.0)
-        
+
         return ui_preds, uu_preds, ssuLoss
 
     def test(self, usr, trnMask):
@@ -71,7 +69,6 @@ class Our(nn.Module):
         allPreds = allPreds * (1 - trnMask) - trnMask * 1e8
         _, topLocs = t.topk(allPreds, args.shoot)
         return topLocs
-
 
 class LightGCN(nn.Module):
     def __init__(self, uEmbeds=None, iEmbeds=None):
@@ -135,7 +132,7 @@ class prepareValue(nn.Module):
 class HypergraphTransormer(nn.Module):
     def __init__(self):
         super(HypergraphTransormer, self).__init__()
-        self.hypergraphLayers = nn.Sequential(*[HypergraphTransformerLayer() for i in range(args.gnn_layer)])
+        self.hypergraphLayers = nn.Sequential(*[HypergraphTransformerLayer() for i in range(args.hgnn_layer)])
         self.Hyper = nn.Parameter(xavierInit(t.empty(args.hyperNum, args.latdim)))
         self.V = nn.Parameter(xavierInit(t.empty(args.latdim, args.latdim)))
         self.prepareValue = prepareValue()
@@ -209,4 +206,26 @@ class LabelNetwork(nn.Module):
         ret = t.reshape(self.sigmoid(self.linear2(lat)), [-1])
         return ret
 
+class SpAdjDropEdge(nn.Module):
+    def __init__(self, keepRate):
+        super(SpAdjDropEdge, self).__init__()
+        self.keepRate = keepRate
+    
+    def forward(self, adj, tpAdj):
+        vals = adj._values()
+        idxs = adj._indices()
+        edgeNum = vals.size()
+        mask = ((t.rand(edgeNum) + self.keepRate).floor()).type(t.bool)
+        newVals = vals[mask] / self.keepRate
+        newIdxs = idxs[:, mask]
+        adj = t.sparse.FloatTensor(newIdxs, newVals, adj.shape)
 
+        vals = tpAdj._values()
+        idxs = tpAdj._indices()
+        edgeNum = vals.size()
+        mask = t.t(mask)
+        newVals = vals[mask] / self.keepRate
+        newIdxs = idxs[:, mask]
+        tpAdj = t.sparse.FloatTensor(newIdxs, newVals, tpAdj.shape)
+        
+        return adj, tpAdj

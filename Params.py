@@ -12,8 +12,8 @@ def parse_args():
 	parser.add_argument('--latdim', default=32, type=int, help='embedding size')
 	parser.add_argument('--sampNum', default=40, type=int, help='batch size for sampling')
 	parser.add_argument('--att_head', default=2, type=int, help='number of attention heads') # 微调
-	parser.add_argument('--gnn_layer', default=2, type=int, help='number of gnn layers')
-	parser.add_argument('--hgnn_layer', default=1, type=int, help='number of hgnn layers')
+	# parser.add_argument('--gnn_layer', default=2, type=int, help='number of gnn layers')
+	parser.add_argument('--hgnn_layer', default=2, type=int, help='number of hgnn layers')
 	parser.add_argument('--hyperNum', default=128, type=int, help='number of hyper edges')
 	parser.add_argument('--interestNum', default=2, type=int, help='number of interests')
 	parser.add_argument('--trnNum', default=10000, type=int, help='number of training instances per epoch')
@@ -25,10 +25,12 @@ def parse_args():
 	parser.add_argument('--tstEpoch', default=3, type=int, help='number of epoch to test while training')
 	parser.add_argument('--leaky', default=0.5, type=float, help='slope for leaky relu')
 	parser.add_argument('--gcn_hops', default=2, type=int, help='number of hops in gcn precessing') # 
-	parser.add_argument('--lambda_u', default=1e-4, type=float, help='weight for uuPreLoss')
+	parser.add_argument('--lambda_u', default=1e-1, type=float, help='weight for uuPreLoss')
 	parser.add_argument('--ssl_reg', default=1e-4, type=float, help='reg weight for ssl loss')
 	parser.add_argument('--ssu_reg', default=1e-4, type=float, help='reg weight for ssu loss')
 	parser.add_argument('--edgeSampRate', default=0.1, type=float, help='Ratio of sampled edges')
+	parser.add_argument('--gpu', default='0', type=str, help='gpu indices')
+	parser.add_argument('--patience', default='5', type=int, help='early stopping patience')
 	return parser.parse_args()
 args = parse_args()
 args.decay_step = args.trnNum//args.batch
