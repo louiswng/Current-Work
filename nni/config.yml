@@ -1,10 +1,10 @@
 experimentName: SHT
 searchSpaceFile: search_space.json
-trialCommand: python3 our.py --data yelp --mult 1e2 --edgeSampRate 0.1 --epoch 150 --save_path yelp_repeat --reg 1e-2
+trialCommand: python3 our.py --data yelp --mult 1e2 --edgeSampRate 0.1 --epoch 150 --save_path yelp_repeat --reg 1e-2 --lambda_u 1e-1
 trialCodeDirectory: ../
 trialConcurrency: 2
 trialGpuNumber: 1
-tunerGpuIndices: [0]
+tunerGpuIndices: "1"
 tuner:
   name: TPE
   classArgs:
@@ -12,6 +12,6 @@ tuner:
 # assessor: Medianstop
 trainingService: 
   platform: local
-  useActiveGpu: True
+  useActiveGpu: true
   maxTrialNumberPerGpu: 4
-  gpuIndices: [0]
+  gpuIndices: "1"
