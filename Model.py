@@ -20,7 +20,7 @@ class Our(nn.Module):
         self.HypergraphTransormer3 = HypergraphTransormer().cuda()
         self.label = LabelNetwork().cuda()
         
-    def forward(self, adj, tpAdj, uAdj, uids, iids, edgeids, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
+    def forward(self, adj, tpAdj, uAdj):
         ui_uEmbed_gcn, ui_iEmbed_gcn = self.LightGCN(adj, tpAdj) # (usr, d)
         uu_Embed_gcn = self.LightGCN2(uAdj)
         # Residual Connection, add positional information
@@ -31,26 +31,30 @@ class Our(nn.Module):
         ui_uKey = self.prepareKey1(ui_uEmbed0)
         ui_iKey = self.prepareKey2(ui_iEmbed0)
         uu_Key = self.prepareKey3(uu_Embed0)
-        self.ui_ulat, ui_uHyper = self.HypergraphTransormer1(ui_uEmbed0, ui_uKey)
-        self.ui_ilat, ui_iHyper = self.HypergraphTransormer2(ui_iEmbed0, ui_iKey)
+        ui_ulat, ui_uHyper = self.HypergraphTransormer1(ui_uEmbed0, ui_uKey)
+        ui_ilat, ui_iHyper = self.HypergraphTransormer2(ui_iEmbed0, ui_iKey)
         uu_lat, uu_Hyper = self.HypergraphTransormer3(uu_Embed0, uu_Key)
 
-        ui_pckUlat = self.ui_ulat[uids] # (batch, d)
-        ui_pckIlat = self.ui_ilat[iids]
+        return ui_ulat, ui_ilat, ui_uHyper, uu_lat, uu_Key, uu_Hyper
+
+    def predPairs(self, adj, tpAdj, uAdj, uids, iids, edgeids, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
+        ui_ulat, ui_ilat, ui_uHyper, uu_lat, uu_Key, uu_Hyper = self.forward(adj, tpAdj, uAdj)
+        ui_pckUlat = ui_ulat[uids] # (batch, d)
+        ui_pckIlat = ui_ilat[iids]
         ui_preds = t.sum(ui_pckUlat * ui_pckIlat, dim=-1) # (batch, batch, d)
 
         uu_pcklat1 = uu_lat[uu_ids1] # (batch, d)
         uu_pcklat2 = uu_lat[uu_ids2]
-        uu_preds = t.sum(uu_pcklat1 * uu_pcklat2, dim=-1) # (batch, batch, d)  
-        
+        uu_preds = t.sum(uu_pcklat1 * uu_pcklat2, dim=-1) # (batch, batch, d) 
+
         coo = uuMat.tocoo()
         usrs1, usrs2 = coo.row[uuedgeids], coo.col[uuedgeids]
         uu_Key = t.reshape(t.permute(uu_Key, dims=[1, 0, 2]), [-1, args.latdim])
         usrKey1 = uu_Key[usrs1] # (batch, d)
         usrKey2 = uu_Key[usrs2]
         uu_Hyper = (uu_Hyper + ui_uHyper) / 2
-        usrLat1 = self.ui_ulat[usrs1] # (batch, d)
-        usrLat2 = self.ui_ulat[usrs2]
+        usrLat1 = ui_ulat[usrs1] # (batch, d)
+        usrLat2 = ui_ulat[usrs2]
         uu_scores = self.label(usrKey1, usrKey2, usrLat1, usrLat2, uu_Hyper) # (batch, k)
         _uu_preds = t.sum(uu_lat[usrs1]*uu_lat[usrs2], dim=1)
 
@@ -63,9 +67,11 @@ class Our(nn.Module):
 
         return ui_preds, uu_preds, ssuLoss
 
-    def test(self, usr, trnMask):
-        pckUlat = self.ui_ulat[usr]
-        allPreds = pckUlat @ t.t(self.ui_ilat)
+    def test(self, usr, trnMask, adj, tpAdj, uAdj):
+        ret = self.forward(adj, tpAdj, uAdj)
+        ui_ulat, ui_ilat = ret[:2]
+        pckUlat = ui_ulat[usr]
+        allPreds = pckUlat @ t.t(ui_ilat)
         allPreds = allPreds * (1 - trnMask) - trnMask * 1e8
         _, topLocs = t.topk(allPreds, args.shoot)
         return topLocs

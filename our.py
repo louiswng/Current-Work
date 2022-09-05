@@ -1,16 +1,16 @@
+from Params import args
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # put this line before any cuda using (eg: import torch as t)
 import torch as t
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
-from Params import args
 from Model import Our, SpAdjDropEdge
 from DataHandler import DataHandler, negSamp
 import numpy as np
 import pickle
-import nni
-from nni.utils import merge_parameter
+# import nni
+# from nni.utils import merge_parameter
 # from torch.utils.tensorboard import SummaryWriter
-import os
-
 # writer = SummaryWriter(log_dir='runs')
 
 class Recommender:
@@ -66,13 +66,13 @@ class Recommender:
                         break
                 # writer.add_scalar('Recall/test', reses['Recall'], ep)
                 # writer.add_scalar('Ndcg/test', reses['NDCG'], ep)
-                nni.report_intermediate_result(reses['Recall'])
+                # nni.report_intermediate_result(reses['Recall'])
                 log(self.makePrint('Test', ep, reses, tstFlag))
                 self.saveHistory()
             self.sche.step()
             print()
         # reses = self.testEpoch()
-        nni.report_final_result(best_acc)
+        # nni.report_final_result(best_acc)
         log(self.makePrint('Test', args.epoch, reses, True))
         self.saveHistory()
 
@@ -138,12 +138,12 @@ class Recommender:
             ed = min((i+1) * args.batch, num)
             batIds = sfIds[st: ed]
 
-            adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj)
+            adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
             adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
 
             uLocs, iLocs, edgeids = self.sampleTrainBatch(batIds, self.handler.trnMat, args.item, args.edgeNum)
             uu_Locs1, uu_Locs2, uu_edgeids = self.sampleTrainBatch(batIds, self.handler.uuMat, args.user, args.uuEdgeNum)
-            preds, uuPreds, ssuLoss = self.model(adj, tpAdj, uAdj, uLocs, iLocs, edgeids, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
+            preds, uuPreds, ssuLoss = self.model.predPairs(adj, tpAdj, uAdj, uLocs, iLocs, edgeids, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
             
             sampNum = len(uLocs) // 2
             posPred = preds[:sampNum]
@@ -194,7 +194,7 @@ class Recommender:
                 usr = usr.long().cuda()
                 trnMask = trnMask.cuda()
 
-                topLocs = self.model.test(usr, trnMask)
+                topLocs = self.model.test(usr, trnMask, self.handler.torchAdj, self.handler.torchTpAdj, self.handler.torchuAdj)
 
                 recall, ndcg = self.calcRes(topLocs.cpu().numpy(), self.handler.tstLoader.dataset.tstLocs, usr)
                 epRecall += recall
@@ -248,14 +248,13 @@ class Recommender:
 
 if __name__ == '__main__':
     logger.saveDefault = True
-    # os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     device = "cuda" if t.cuda.is_available() else "cpu"
     print(f"Using {device} device")
 
     # get parameters form tuner
-    tuner_params = nni.get_next_parameter()
-    params = vars(merge_parameter(args, tuner_params))
-    print(params)
+    # tuner_params = nni.get_next_parameter()
+    # params = vars(merge_parameter(args, tuner_params))
+    # print(params)
     
     log('Start')
     handler = DataHandler()
