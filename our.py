@@ -2,7 +2,6 @@ from Params import args
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # put this line before any cuda using (eg: import torch as t)
 import torch as t
-import torch.nn.functional as F
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 from Model import Our, SpAdjDropEdge
@@ -81,7 +80,6 @@ class Recommender:
 
     def prepareModel(self):
         self.model = Our().cuda()
-        self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).cuda()
         self.opt = t.optim.Adam(self.model.parameters(), lr=args.lr)
         self.sche = t.optim.lr_scheduler.ExponentialLR(self.opt, gamma=args.decay)
 
@@ -118,18 +116,10 @@ class Recommender:
         edgeids = np.random.choice(edgeNum, edgeSampNum)
         return uLocs, iLocs, edgeids
         
-    def calcSSL(self, embeds1, embeds2, nodes):
-        pckEmbeds1 = F.normalize(embeds1[nodes], 2)
-        pckEmbeds2 = F.normalize(embeds2[nodes], 2)
-        nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp)
-        deno = t.sum(t.exp(t.mm(pckEmbeds1, t.transpose(embeds2, 0, 1)) / args.temp), axis=-1)
-        ssl = t.sum(- t.log(nume / deno))
-        return ssl
-
     def trainEpoch(self):
         num = args.user
         sfIds = np.random.permutation(num)[:args.trnNum]
-        epLoss, epPreLoss, epuuPreLoss, epssuLoss = [0] * 4
+        epLoss, epPreLoss, epuuPreLoss, epsslLoss, epssuLoss = [0] * 5
         num = len(sfIds)
         steps = int(np.ceil(num / args.batch))
         adj = self.handler.torchAdj
@@ -147,16 +137,7 @@ class Recommender:
             iLocs = t.tensor(iLocs)
             edgeids = t.tensor(edgeids)
 
-            adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
-            adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
-            uEmbeds1, iEmbeds1, _, _, _ ,_ ,_ = self.model(adj1, tpAdj1, uAdj)
-            uEmbeds2, iEmbeds2, _, _, _ ,_ ,_ = self.model(adj2, tpAdj2, uAdj)
-
-            usrSet = t.unique(uLocs)
-            itmSet = t.unique(iLocs)
-            sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
-
-            preLoss, uuPreLoss, ssuLoss = self.model.calcLosses(adj, tpAdj, uAdj, uLocs, iLocs, edgeids, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
+            preLoss, uuPreLoss, sslLoss, ssuLoss = self.model.calcLosses(adj, tpAdj, uAdj, uLocs, iLocs, edgeids, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
                       
             uuPreLoss *= args.lambda_u           
             ssuLoss *= args.ssu_reg
@@ -166,22 +147,24 @@ class Recommender:
                 regLoss += W.norm(2).square()   
             regLoss *= args.reg
 
-            loss = preLoss + uuPreLoss + regLoss + ssuLoss            
+            loss = preLoss + uuPreLoss + sslLoss + ssuLoss + regLoss         
             epLoss += loss.item()
             epPreLoss += preLoss.item()
             epuuPreLoss += uuPreLoss.item()
+            epsslLoss += sslLoss.item()
             epssuLoss += ssuLoss.item()
 
             self.opt.zero_grad()
             loss.backward()
             self.opt.step()
 
-            log('Step %d/%d: loss = %.2f, preLoss = %.2f, uuPreLoss = %.2f, ssuLoss = %.2f, regLoss = %.2f      ' % (i, steps, loss, preLoss, uuPreLoss, ssuLoss, regLoss), save=False, oneline=True)
+            log('Step %d/%d: loss = %.2f, preLoss = %.2f, uuPreLoss = %.2f, sslLoss = %.2f, ssuLoss = %.2f, regLoss = %.2f      ' % (i, steps, loss, preLoss, uuPreLoss, sslLoss, ssuLoss, regLoss), save=False, oneline=True)
         
         ret = dict()
         ret['Loss'] = epLoss / steps
         ret['preLoss'] = epPreLoss / steps
         ret['uuPreLoss'] = epuuPreLoss / steps
+        ret['sslLoss'] = epsslLoss / steps
         ret['ssuLoss'] = epssuLoss / steps
         return ret
 

@@ -1,5 +1,6 @@
 import torch as t
 from torch import nn
+import torch.nn.functional as F
 from Params import args
 
 xavierInit = nn.init.xavier_uniform_
@@ -19,6 +20,7 @@ class Our(nn.Module):
         self.HypergraphTransormer2 = HypergraphTransormer().cuda()
         self.HypergraphTransormer3 = HypergraphTransormer().cuda()
         self.label = LabelNetwork().cuda()
+        self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).cuda()
         
     def forward(self, adj, tpAdj, uAdj):
         ui_uEmbed_gcn, ui_iEmbed_gcn = self.LightGCN(adj, tpAdj) # (usr, d)
@@ -35,10 +37,18 @@ class Our(nn.Module):
         ui_ilat, ui_iHyper = self.HypergraphTransormer2(ui_iEmbed0, ui_iKey)
         uu_lat, uu_Hyper = self.HypergraphTransormer3(uu_Embed0, uu_Key)
 
-        return ui_ulat, ui_ilat, ui_uHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper
+        return ui_uEmbed0, ui_iEmbed0, ui_ulat, ui_ilat, ui_uHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper
+
+    def calcSSL(self, embeds1, embeds2, nodes):
+        pckEmbeds1 = F.normalize(embeds1[nodes], 2)
+        pckEmbeds2 = F.normalize(embeds2[nodes], 2)
+        nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp) # same node
+        deno = t.sum(t.exp(t.mm(pckEmbeds1, t.transpose(embeds2, 0, 1)) / args.temp), axis=-1)
+        ssl = t.sum(- t.log(nume / deno))
+        return ssl
 
     def calcLosses(self, adj, tpAdj, uAdj, uids, iids, edgeids, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
-        ui_ulat, ui_ilat, ui_uHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, tpAdj, uAdj)
+        uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, tpAdj, uAdj)
         ui_pckUlat = ui_ulat[uids] # (batch, d)
         ui_pckIlat = ui_ilat[iids]
         ui_preds = t.sum(ui_pckUlat * ui_pckIlat, dim=-1) # (batch, batch, d)
@@ -56,6 +66,15 @@ class Our(nn.Module):
         posPred = uu_preds[:sampNum]
         negPred = uu_preds[sampNum:]
         uuPreLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
+
+        adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
+        adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
+        uEmbeds1, iEmbeds1, _, _, _, _, _ ,_ ,_ = self.forward(adj1, tpAdj1, uAdj)
+        uEmbeds2, iEmbeds2, _, _, _, _, _ ,_ ,_ = self.forward(adj2, tpAdj2, uAdj)
+
+        usrSet = t.unique(uids)
+        itmSet = t.unique(iids)
+        sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
 
         coo = uuMat.tocoo()
         usrs1, usrs2 = coo.row[uuedgeids], coo.col[uuedgeids]
@@ -75,11 +94,11 @@ class Our(nn.Module):
         scdPreds = _uu_preds[halfNum:]
         ssuLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * args.mult * (fstScores-scdScores)))
 
-        return preLoss, uuPreLoss, ssuLoss
+        return preLoss, uuPreLoss, sslLoss, ssuLoss
 
     def test(self, usr, trnMask, adj, tpAdj, uAdj):
         ret = self.forward(adj, tpAdj, uAdj)
-        ui_ulat, ui_ilat = ret[:2]
+        ui_ulat, ui_ilat = ret[2:4]
         pckUlat = ui_ulat[usr]
         allPreds = pckUlat @ t.t(ui_ilat)
         allPreds = allPreds * (1 - trnMask) - trnMask * 1e8
