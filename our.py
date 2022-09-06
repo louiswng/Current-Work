@@ -2,6 +2,7 @@ from Params import args
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # put this line before any cuda using (eg: import torch as t)
 import torch as t
+import torch.nn.functional as F
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 from Model import Our, SpAdjDropEdge
@@ -47,7 +48,7 @@ class Recommender:
             stloc = 0
             log('Model Initialized')
         
-        best_acc = 0.0
+        best_acc, best_acc2 = 0.0, 0.0
         for ep in range(stloc, args.epoch):
             tstFlag = (ep % args.tstEpoch == 0)
             reses = self.trainEpoch()
@@ -62,7 +63,7 @@ class Recommender:
                 else:
                     es += 1
                     if es >= args.patience:
-                        print("Early stopping with best Recall and NDCG is", best_acc, best_acc2)
+                        print("Early stopping with best Recall and NDCG are", best_acc, best_acc2)
                         break
                 writer.add_scalar('Recall/test', reses['Recall'], ep)
                 writer.add_scalar('Ndcg/test', reses['NDCG'], ep)
@@ -71,9 +72,11 @@ class Recommender:
                 self.saveHistory()
             self.sche.step()
             print()
+
         # reses = self.testEpoch()
         # nni.report_final_result(best_acc)
         # log(self.makePrint('Test', args.epoch, reses, True))
+        print("best Recall and NDCG are", best_acc, best_acc2)
         self.saveHistory()
 
     def prepareModel(self):
@@ -137,12 +140,22 @@ class Recommender:
             st = i * args.batch
             ed = min((i+1) * args.batch, num)
             batIds = sfIds[st: ed]
-
-            # adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
-            # adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
-
             uLocs, iLocs, edgeids = self.sampleTrainBatch(batIds, self.handler.trnMat, args.item, args.edgeNum)
             uu_Locs1, uu_Locs2, uu_edgeids = self.sampleTrainBatch(batIds, self.handler.uuMat, args.user, args.uuEdgeNum)
+
+            uLocs = t.tensor(uLocs)
+            iLocs = t.tensor(iLocs)
+            edgeids = t.tensor(edgeids)
+
+            adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
+            adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
+            uEmbeds1, iEmbeds1, _, _, _ ,_ ,_ = self.model(adj1, tpAdj1, uAdj)
+            uEmbeds2, iEmbeds2, _, _, _ ,_ ,_ = self.model(adj2, tpAdj2, uAdj)
+
+            usrSet = t.unique(uLocs)
+            itmSet = t.unique(iLocs)
+            sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
+
             preLoss, uuPreLoss, ssuLoss = self.model.calcLosses(adj, tpAdj, uAdj, uLocs, iLocs, edgeids, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
                       
             uuPreLoss *= args.lambda_u           
