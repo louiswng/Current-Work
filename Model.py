@@ -69,8 +69,10 @@ class Our(nn.Module):
 
         adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
         adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
-        uEmbeds1, iEmbeds1, _, _, _, _, _ ,_ ,_ = self.forward(adj1, tpAdj1, uAdj)
-        uEmbeds2, iEmbeds2, _, _, _, _, _ ,_ ,_ = self.forward(adj2, tpAdj2, uAdj)
+        ret = self.forward(adj1, tpAdj1, uAdj)
+        uEmbeds1, iEmbeds1 = ret[2:4] # global
+        ret = self.forward(adj2, tpAdj2, uAdj)
+        uEmbeds2, iEmbeds2 = ret[2:4]
 
         usrSet = t.unique(uids)
         itmSet = t.unique(iids)

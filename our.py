@@ -59,6 +59,7 @@ class Recommender:
                     best_acc = reses['Recall']
                     best_acc2 = reses['NDCG']
                     es = 0
+                    log('best acc!')
                 else:
                     es += 1
                     if es >= args.patience:
