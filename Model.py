@@ -35,17 +35,27 @@ class Our(nn.Module):
         ui_ilat, ui_iHyper = self.HypergraphTransormer2(ui_iEmbed0, ui_iKey)
         uu_lat, uu_Hyper = self.HypergraphTransormer3(uu_Embed0, uu_Key)
 
-        return ui_ulat, ui_ilat, ui_uHyper, uu_lat, uu_Key, uu_Hyper
+        return ui_ulat, ui_ilat, ui_uHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper
 
-    def predPairs(self, adj, tpAdj, uAdj, uids, iids, edgeids, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
-        ui_ulat, ui_ilat, ui_uHyper, uu_lat, uu_Key, uu_Hyper = self.forward(adj, tpAdj, uAdj)
+    def calcLosses(self, adj, tpAdj, uAdj, uids, iids, edgeids, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
+        ui_ulat, ui_ilat, ui_uHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, tpAdj, uAdj)
         ui_pckUlat = ui_ulat[uids] # (batch, d)
         ui_pckIlat = ui_ilat[iids]
         ui_preds = t.sum(ui_pckUlat * ui_pckIlat, dim=-1) # (batch, batch, d)
 
+        sampNum = len(uids) // 2
+        posPred = ui_preds[:sampNum]
+        negPred = ui_preds[sampNum:]
+        preLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
+
         uu_pcklat1 = uu_lat[uu_ids1] # (batch, d)
         uu_pcklat2 = uu_lat[uu_ids2]
-        uu_preds = t.sum(uu_pcklat1 * uu_pcklat2, dim=-1) # (batch, batch, d) 
+        uu_preds = t.sum(uu_pcklat1 * uu_pcklat2, dim=-1) # (batch, batch, d)
+
+        sampNum = len(uu_ids1) // 2
+        posPred = uu_preds[:sampNum]
+        negPred = uu_preds[sampNum:]
+        uuPreLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
 
         coo = uuMat.tocoo()
         usrs1, usrs2 = coo.row[uuedgeids], coo.col[uuedgeids]
@@ -56,7 +66,7 @@ class Our(nn.Module):
         usrLat1 = ui_ulat[usrs1] # (batch, d)
         usrLat2 = ui_ulat[usrs2]
         uu_scores = self.label(usrKey1, usrKey2, usrLat1, usrLat2, uu_Hyper) # (batch, k)
-        _uu_preds = t.sum(uu_lat[usrs1]*uu_lat[usrs2], dim=1)
+        _uu_preds = t.sum(uu_Embed0[usrs1]*uu_Embed0[usrs2], dim=1)
 
         halfNum = uu_scores.shape[0] // 2
         fstScores = uu_scores[:halfNum]
@@ -65,7 +75,7 @@ class Our(nn.Module):
         scdPreds = _uu_preds[halfNum:]
         ssuLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * args.mult * (fstScores-scdScores)))
 
-        return ui_preds, uu_preds, ssuLoss
+        return preLoss, uuPreLoss, ssuLoss
 
     def test(self, usr, trnMask, adj, tpAdj, uAdj):
         ret = self.forward(adj, tpAdj, uAdj)
@@ -73,7 +83,7 @@ class Our(nn.Module):
         pckUlat = ui_ulat[usr]
         allPreds = pckUlat @ t.t(ui_ilat)
         allPreds = allPreds * (1 - trnMask) - trnMask * 1e8
-        _, topLocs = t.topk(allPreds, args.shoot)
+        _, topLocs = t.topk(allPreds, args.topk)
         return topLocs
 
 class LightGCN(nn.Module):

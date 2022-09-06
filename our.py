@@ -10,8 +10,8 @@ import numpy as np
 import pickle
 # import nni
 # from nni.utils import merge_parameter
-# from torch.utils.tensorboard import SummaryWriter
-# writer = SummaryWriter(log_dir='runs')
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter(log_dir='runs')
 
 class Recommender:
     def __init__(self, handler):
@@ -51,7 +51,7 @@ class Recommender:
         for ep in range(stloc, args.epoch):
             tstFlag = (ep % args.tstEpoch == 0)
             reses = self.trainEpoch()
-            # writer.add_scalar('Loss/train', reses['Loss'], ep)
+            writer.add_scalar('Loss/train', reses['Loss'], ep)
             log(self.makePrint('Train', ep, reses, tstFlag))
             if tstFlag:
                 reses = self.testEpoch()
@@ -64,8 +64,8 @@ class Recommender:
                     if es >= args.patience:
                         print("Early stopping with best Recall and NDCG is", best_acc, best_acc2)
                         break
-                # writer.add_scalar('Recall/test', reses['Recall'], ep)
-                # writer.add_scalar('Ndcg/test', reses['NDCG'], ep)
+                writer.add_scalar('Recall/test', reses['Recall'], ep)
+                writer.add_scalar('Ndcg/test', reses['NDCG'], ep)
                 # nni.report_intermediate_result(reses['Recall'])
                 log(self.makePrint('Test', ep, reses, tstFlag))
                 self.saveHistory()
@@ -73,7 +73,7 @@ class Recommender:
             print()
         # reses = self.testEpoch()
         # nni.report_final_result(best_acc)
-        log(self.makePrint('Test', args.epoch, reses, True))
+        # log(self.makePrint('Test', args.epoch, reses, True))
         self.saveHistory()
 
     def prepareModel(self):
@@ -138,30 +138,21 @@ class Recommender:
             ed = min((i+1) * args.batch, num)
             batIds = sfIds[st: ed]
 
-            adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
-            adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
+            # adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
+            # adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
 
             uLocs, iLocs, edgeids = self.sampleTrainBatch(batIds, self.handler.trnMat, args.item, args.edgeNum)
             uu_Locs1, uu_Locs2, uu_edgeids = self.sampleTrainBatch(batIds, self.handler.uuMat, args.user, args.uuEdgeNum)
-            preds, uuPreds, ssuLoss = self.model.predPairs(adj, tpAdj, uAdj, uLocs, iLocs, edgeids, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
-            
-            sampNum = len(uLocs) // 2
-            posPred = preds[:sampNum]
-            negPred = preds[sampNum:]
-            preLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
-            
-            sampNum = len(uu_Locs1) // 2
-            posPred = uuPreds[:sampNum]
-            negPred = uuPreds[sampNum:]
-            uuPreLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
-            uuPreLoss = args.lambda_u *  uuPreLoss           
-            
+            preLoss, uuPreLoss, ssuLoss = self.model.calcLosses(adj, tpAdj, uAdj, uLocs, iLocs, edgeids, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
+                      
+            uuPreLoss *= args.lambda_u           
+            ssuLoss *= args.ssu_reg
+
             regLoss = 0
             for W in self.model.parameters():
                 regLoss += W.norm(2).square()   
             regLoss *= args.reg
 
-            ssuLoss = args.ssu_reg * ssuLoss
             loss = preLoss + uuPreLoss + regLoss + ssuLoss            
             epLoss += loss.item()
             epPreLoss += preLoss.item()
@@ -212,7 +203,7 @@ class Recommender:
             temTopLocs = list(topLocs[i])
             temTstLocs = tstLocs[batIds[i]]
             tstNum = len(temTstLocs)
-            maxDcg = np.sum([np.reciprocal(np.log2(loc + 2)) for loc in range(min(tstNum, args.shoot))])
+            maxDcg = np.sum([np.reciprocal(np.log2(loc + 2)) for loc in range(min(tstNum, args.topk))])
             recall = dcg = 0
             for val in temTstLocs:
                 if val in temTopLocs:
