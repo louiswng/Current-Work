@@ -43,6 +43,30 @@ class DataHandler:
 			ret = sp.coo_matrix(ret)
 		return ret
 
+	def normalizeAdj(self, mat):
+		degree = np.array(mat.sum(axis=-1))
+		dInvSqrt = np.reshape(np.power(degree, -0.5), [-1])
+		dInvSqrt[np.isinf(dInvSqrt)] = 0.0
+		dInvSqrtMat = sp.diags(dInvSqrt)
+		return mat.dot(dInvSqrtMat).transpose().dot(dInvSqrtMat).tocoo()
+
+	def makeTorchAdj(self, mat):
+		# make ui adj
+		a = sp.csr_matrix((args.user, args.user))
+		b = sp.csr_matrix((args.item, args.item))
+		# sp.hstack([a, mat]): [usr, usr+itm]
+		# sp.hstack([mat.transpose(), b]): [itm, itm+usr]
+		mat = sp.vstack([sp.hstack([a, mat]), sp.hstack([mat.transpose(), b])]) # (usr+itm, itm+usr)
+		mat = (mat != 0) * 1.0
+		mat = (mat + sp.eye(mat.shape[0])) * 1.0
+		mat = self.normalizeAdj(mat)
+		
+		# make cuda tensor
+		idxs = t.from_numpy(np.vstack([mat.row, mat.col]).astype(np.int64))
+		vals = t.from_numpy(mat.data.astype(np.float32))
+		shape = t.Size(mat.shape)
+		return t.sparse.FloatTensor(idxs, vals, shape).cuda()
+
 	# indices: mat 中 1 的横竖坐标
 	# shape: mat 维度
 	def transToLsts(self, mat, mask=False, norm=False):

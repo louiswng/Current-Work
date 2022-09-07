@@ -131,14 +131,21 @@ class Recommender:
             st = i * args.batch
             ed = min((i+1) * args.batch, num)
             batIds = sfIds[st: ed]
-            uLocs, iLocs, edgeids = self.sampleTrainBatch(batIds, self.handler.trnMat, args.item, args.edgeNum)
+            uLocs, iLocs, _ = self.sampleTrainBatch(batIds, self.handler.trnMat, args.item, args.edgeNum)
             uu_Locs1, uu_Locs2, uu_edgeids = self.sampleTrainBatch(batIds, self.handler.uuMat, args.user, args.uuEdgeNum)
+
+            edgeSampNum = int(args.edgeSampRate * args.edgeNum)
+            if edgeSampNum % 2 == 1:
+                edgeSampNum += 1
+            edgeids1 = np.random.choice(args.edgeNum, edgeSampNum)
+            edgeids2 = np.random.choice(args.edgeNum, edgeSampNum)
 
             uLocs = t.tensor(uLocs)
             iLocs = t.tensor(iLocs)
-            edgeids = t.tensor(edgeids)
+            edgeids1 = t.tensor(edgeids1)
+            edgeids2 = t.tensor(edgeids2)
 
-            preLoss, uuPreLoss, sslLoss, ssuLoss = self.model.calcLosses(adj, tpAdj, uAdj, uLocs, iLocs, edgeids, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
+            preLoss, uuPreLoss, sslLoss, ssuLoss = self.model.calcLosses(adj, tpAdj, uAdj, uLocs, iLocs, edgeids1, edgeids2, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
                       
             uuPreLoss *= args.lambda_u           
             ssuLoss *= args.ssu_reg

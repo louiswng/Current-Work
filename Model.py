@@ -20,6 +20,7 @@ class Our(nn.Module):
         self.HypergraphTransormer2 = HypergraphTransormer().cuda()
         self.HypergraphTransormer3 = HypergraphTransormer().cuda()
         self.label = LabelNetwork().cuda()
+        self.label2 = LabelNetwork2().cuda()
         self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).cuda()
         
     def forward(self, adj, tpAdj, uAdj):
@@ -37,7 +38,7 @@ class Our(nn.Module):
         ui_ilat, ui_iHyper = self.HypergraphTransormer2(ui_iEmbed0, ui_iKey)
         uu_lat, uu_Hyper = self.HypergraphTransormer3(uu_Embed0, uu_Key)
 
-        return ui_uEmbed0, ui_iEmbed0, ui_ulat, ui_ilat, ui_uHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper
+        return ui_uEmbed0, ui_iEmbed0, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper
 
     def calcSSL(self, embeds1, embeds2, nodes):
         pckEmbeds1 = F.normalize(embeds1[nodes], 2)
@@ -47,26 +48,26 @@ class Our(nn.Module):
         ssl = t.sum(- t.log(nume / deno))
         return ssl
 
-    def calcLosses(self, adj, tpAdj, uAdj, uids, iids, edgeids, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
-        uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, tpAdj, uAdj)
+    def calcLosses(self, adj, tpAdj, uAdj, uids, iids, edgeids1, edgeids2, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
+        uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, tpAdj, uAdj)
         ui_pckUlat = ui_ulat[uids] # (batch, d)
         ui_pckIlat = ui_ilat[iids]
-        ui_preds = t.sum(ui_pckUlat * ui_pckIlat, dim=-1) # (batch, batch, d)
+        ui_preds = (ui_pckUlat * ui_pckIlat).sum(-1) # (batch, batch, d)
 
         sampNum = len(uids) // 2
         posPred = ui_preds[:sampNum]
         negPred = ui_preds[sampNum:]
-        preLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
+        preLoss = (t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))).sum() / args.batch
 
         uu_pcklat1 = uu_lat[uu_ids1] # (batch, d)
         uu_pcklat2 = uu_lat[uu_ids2]
-        uu_preds = t.sum(uu_pcklat1 * uu_pcklat2, dim=-1) # (batch, batch, d)
+        uu_preds = (uu_pcklat1 * uu_pcklat2).sum(-1) # (batch, batch, d)
 
         sampNum = len(uu_ids1) // 2
         posPred = uu_preds[:sampNum]
         negPred = uu_preds[sampNum:]
         uuPreLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
-
+        
         adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
         adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
         ret = self.forward(adj1, tpAdj1, uAdj)
@@ -86,15 +87,15 @@ class Our(nn.Module):
         uu_Hyper = (uu_Hyper + ui_uHyper) / 2
         usrLat1 = ui_ulat[usrs1] # (batch, d)
         usrLat2 = ui_ulat[usrs2]
-        uu_scores = self.label(usrKey1, usrKey2, usrLat1, usrLat2, uu_Hyper) # (batch, k)
-        _uu_preds = t.sum(uu_Embed0[usrs1]*uu_Embed0[usrs2], dim=1)
+        uu_scores = self.label2(usrKey1, usrKey2, usrLat1, usrLat2, uu_Hyper) # (batch, k)
+        _uu_preds = (uu_Embed0[usrs1]*uu_Embed0[usrs2]).sum(1)
 
         halfNum = uu_scores.shape[0] // 2
         fstScores = uu_scores[:halfNum]
         scdScores = uu_scores[halfNum:]
         fstPreds = _uu_preds[:halfNum]
         scdPreds = _uu_preds[halfNum:]
-        ssuLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * args.mult * (fstScores-scdScores)))
+        ssuLoss = (t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * args.mult * (fstScores-scdScores))).sum()
 
         return preLoss, uuPreLoss, sslLoss, ssuLoss
 
@@ -210,6 +211,40 @@ class Meta(nn.Module):
         super(Meta, self).__init__()
         self.linear1 = nn.Linear(args.latdim, args.latdim * args.latdim, bias=True)
         self.linear2 = nn.Linear(args.latdim, args.latdim, bias=True)
+        self.leakyrelu = nn.LeakyReLU(args.leaky)
+    def forward(self, hyper):
+        hyper_mean = t.mean(hyper, dim=0, keepdim=True)
+        hyper = hyper_mean
+        W1 = t.reshape(self.linear1(hyper), [args.latdim, args.latdim])
+        b1 = self.linear2(hyper)
+        def mapping(key):
+            ret = self.leakyrelu(key @ W1 + b1)
+            return ret
+        return mapping
+
+class LabelNetwork(nn.Module):
+    def __init__(self):
+        super(LabelNetwork, self).__init__()
+        self.meta = Meta()
+        self.linear1 = nn.Linear(2*args.latdim, args.latdim, bias=True)
+        self.linear2 = nn.Linear(args.latdim, 1, bias=True)
+        self.leakyrelu = nn.LeakyReLU(args.leaky)
+        self.sigmoid = nn.Sigmoid()
+    def forward(self, usrKey, itmKey, uHyper, iHyper):
+        uMapping = self.meta(uHyper)
+        iMapping = self.meta(iHyper)
+        ulat = uMapping(usrKey)
+        ilat = iMapping(itmKey)
+        lat = t.cat((ulat, ilat), dim=-1)
+        lat = self.leakyrelu(self.linear1(lat)) + ulat + ilat
+        ret = t.reshape(self.sigmoid(self.linear2(lat)), [-1])
+        return ret
+
+class Meta2(nn.Module):
+    def __init__(self):
+        super(Meta2, self).__init__()
+        self.linear1 = nn.Linear(args.latdim, args.latdim * args.latdim, bias=True)
+        self.linear2 = nn.Linear(args.latdim, args.latdim, bias=True)
         self.linear3 = nn.Linear(args.latdim, args.latdim * args.latdim, bias=True)
         self.linear4 = nn.Linear(args.latdim, args.latdim, bias=True)
         self.leakyrelu = nn.LeakyReLU(args.leaky)
@@ -226,10 +261,10 @@ class Meta(nn.Module):
             return ret
         return mapping
 
-class LabelNetwork(nn.Module):
+class LabelNetwork2(nn.Module):
     def __init__(self):
-        super(LabelNetwork, self).__init__()
-        self.meta = Meta()
+        super(LabelNetwork2, self).__init__()
+        self.meta = Meta2()
         self.linear1 = nn.Linear(2*args.latdim, args.latdim, bias=True)
         self.linear2 = nn.Linear(args.latdim, 1, bias=True)
         self.leakyrelu = nn.LeakyReLU(args.leaky)
@@ -266,3 +301,28 @@ class SpAdjDropEdge(nn.Module):
         tpAdj = t.sparse.FloatTensor(newIdxs, newVals, tpAdj.shape)
         
         return adj, tpAdj
+
+class SpAdjDropEdge2(nn.Module):
+    def __init__(self, keepRate):
+        super(SpAdjDropEdge, self).__init__()
+    
+    def forward(self, trnMat, adj, tpAdj, edgeids):
+        coo = trnMat.tocoo()
+        usrs, itms = coo.row[edgeids], coo.col[edgeids]
+        ui_uKey = t.reshape(t.permute(ui_uKey, dims=[1, 0, 2]), [-1, args.latdim])
+        ui_iKey = t.reshape(t.permute(ui_iKey, dims=[1, 0, 2]), [-1, args.latdim])
+        usrKey = ui_uKey[usrs]
+        itmKey = ui_iKey[itms]
+        ui_scores = self.label(usrKey, itmKey, ui_uHyper, ui_iHyper)
+        _ui_preds = (uEmbeds[usrs]*iEmbeds[itms]).sum(1)
+        delta_scores = (ui_scores-_ui_preds).abs()
+
+        indices = delta_scores.where(x<args.threshold) # select prefered edge
+
+        
+        val = adj._values()[edgeids]
+        idxs = adj._indices()
+        edgeNum = vals.size()
+
+
+        return (ui_scores-_ui_preds).abs() # delta

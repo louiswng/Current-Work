@@ -27,6 +27,7 @@ def parse_args():
 	parser.add_argument('--lambda_u', default=1e-1, type=float, help='weight for uuPreLoss')
 	parser.add_argument('--ssl_reg', default=1e-4, type=float, help='reg weight for ssl loss')
 	parser.add_argument('--temp', default=1, type=float, help='temperature in SSL')
+	parser.add_argument('--threshold', default=1.0, type=float, help='threshold to drop edge in SGL')
 	parser.add_argument('--ssu_reg', default=1e-4, type=float, help='reg weight for ssu loss')
 	parser.add_argument('--edgeSampRate', default=0.1, type=float, help='Ratio of sampled edges')
 	parser.add_argument('--gpu', default='0', type=str, help='gpu indices')
