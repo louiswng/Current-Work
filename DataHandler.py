@@ -110,7 +110,6 @@ class DataHandler:
 		data = t.from_numpy(data.astype(np.float32))
 		shape = t.Size(shape)
 		self.torchAdj = t.sparse.FloatTensor(idx, data, shape).cuda()
-		self.torchTpAdj = t.transpose(self.torchAdj, 0, 1).cuda()
 		
 		idx, data, shape = self.transToLsts(uuMat, norm=True)
 		idx = t.t(t.from_numpy(idx.astype(np.int64)))

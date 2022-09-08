@@ -19,11 +19,13 @@ class Our(nn.Module):
         self.HypergraphTransormer1 = HypergraphTransormer().cuda()
         self.HypergraphTransormer2 = HypergraphTransormer().cuda()
         self.HypergraphTransormer3 = HypergraphTransormer().cuda()
-        self.label = LabelNetwork().cuda()
+        # self.label = LabelNetwork().cuda()
         self.label2 = LabelNetwork2().cuda()
         self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).cuda()
+        self.SpAdjDropEdge2 = SpAdjDropEdge2().cuda()
         
-    def forward(self, adj, tpAdj, uAdj):
+    def forward(self, adj, uAdj):
+        tpAdj = t.transpose(adj, 0 ,1)
         ui_uEmbed_gcn, ui_iEmbed_gcn = self.LightGCN(adj, tpAdj) # (usr, d)
         uu_Embed_gcn = self.LightGCN2(uAdj)
         # Residual Connection, add positional information
@@ -48,8 +50,8 @@ class Our(nn.Module):
         ssl = t.sum(- t.log(nume / deno))
         return ssl
 
-    def calcLosses(self, adj, tpAdj, uAdj, uids, iids, edgeids1, edgeids2, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
-        uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, tpAdj, uAdj)
+    def calcLosses(self, adj, uAdj, uids, iids, edgeids1, edgeids2, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
+        uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, uAdj)
         ui_pckUlat = ui_ulat[uids] # (batch, d)
         ui_pckIlat = ui_ilat[iids]
         ui_preds = (ui_pckUlat * ui_pckIlat).sum(-1) # (batch, batch, d)
@@ -68,11 +70,13 @@ class Our(nn.Module):
         negPred = uu_preds[sampNum:]
         uuPreLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
         
-        adj1, tpAdj1 = self.SpAdjDropEdge(adj, tpAdj) # update per batch
-        adj2, tpAdj2 = self.SpAdjDropEdge(adj, tpAdj)
-        ret = self.forward(adj1, tpAdj1, uAdj)
+        adj1 = self.SpAdjDropEdge(adj)
+        adj2 = self.SpAdjDropEdge(adj)
+        # adj1 = self.SpAdjDropEdge2(trnMat, adj, edgeids1, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper) # update per batch
+        # adj2 = self.SpAdjDropEdge2(trnMat, adj, edgeids2, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper)
+        ret = self.forward(adj1, uAdj)
         uEmbeds1, iEmbeds1 = ret[2:4] # global
-        ret = self.forward(adj2, tpAdj2, uAdj)
+        ret = self.forward(adj2, uAdj)
         uEmbeds2, iEmbeds2 = ret[2:4]
 
         usrSet = t.unique(uids)
@@ -99,8 +103,8 @@ class Our(nn.Module):
 
         return preLoss, uuPreLoss, sslLoss, ssuLoss
 
-    def test(self, usr, trnMask, adj, tpAdj, uAdj):
-        ret = self.forward(adj, tpAdj, uAdj)
+    def test(self, usr, trnMask, adj, uAdj):
+        ret = self.forward(adj, uAdj)
         ui_ulat, ui_ilat = ret[2:4]
         pckUlat = ui_ulat[usr]
         allPreds = pckUlat @ t.t(ui_ilat)
@@ -283,7 +287,7 @@ class SpAdjDropEdge(nn.Module):
         super(SpAdjDropEdge, self).__init__()
         self.keepRate = keepRate
     
-    def forward(self, adj, tpAdj):
+    def forward(self, adj):
         vals = adj._values()
         idxs = adj._indices()
         edgeNum = vals.size()
@@ -291,22 +295,15 @@ class SpAdjDropEdge(nn.Module):
         newVals = vals[mask] / self.keepRate
         newIdxs = idxs[:, mask]
         adj = t.sparse.FloatTensor(newIdxs, newVals, adj.shape)
-
-        vals = tpAdj._values()
-        idxs = tpAdj._indices()
-        edgeNum = vals.size()
-        mask = t.t(mask)
-        newVals = vals[mask] / self.keepRate
-        newIdxs = idxs[:, mask]
-        tpAdj = t.sparse.FloatTensor(newIdxs, newVals, tpAdj.shape)
         
-        return adj, tpAdj
+        return adj
 
 class SpAdjDropEdge2(nn.Module):
-    def __init__(self, keepRate):
-        super(SpAdjDropEdge, self).__init__()
-    
-    def forward(self, trnMat, adj, tpAdj, edgeids):
+    def __init__(self):
+        super(SpAdjDropEdge2, self).__init__()
+        self.label = LabelNetwork().cuda()
+        
+    def forward(self, trnMat, adj, edgeids, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper):
         coo = trnMat.tocoo()
         usrs, itms = coo.row[edgeids], coo.col[edgeids]
         ui_uKey = t.reshape(t.permute(ui_uKey, dims=[1, 0, 2]), [-1, args.latdim])
@@ -317,12 +314,14 @@ class SpAdjDropEdge2(nn.Module):
         _ui_preds = (uEmbeds[usrs]*iEmbeds[itms]).sum(1)
         delta_scores = (ui_scores-_ui_preds).abs()
 
-        indices = delta_scores.where(x<args.threshold) # select prefered edge
+        indices = delta_scores.where(delta_scores>args.threshold, t.zeros_like(edgeids).cuda()) # select prefered edge
+        indices = t.nonzero(indices)
+        edge_indices = edgeids[indices]
 
-        
-        val = adj._values()[edgeids]
+        val = adj._values()
         idxs = adj._indices()
-        edgeNum = vals.size()
+        newVals = val[edge_indices]
+        newIdxs = idxs[:, edge_indices]
+        adj = t.sparse.FloatTensor(newIdxs, newVals, adj.shape)  
 
-
-        return (ui_scores-_ui_preds).abs() # delta
+        return adj

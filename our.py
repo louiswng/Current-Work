@@ -1,6 +1,8 @@
 from Params import args
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # put this line before any cuda using (eg: import torch as t)
+from setproctitle import setproctitle
+setproctitle("louis-our")
 import torch as t
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
@@ -8,10 +10,10 @@ from Model import Our, SpAdjDropEdge
 from DataHandler import DataHandler, negSamp
 import numpy as np
 import pickle
-# import nni
-# from nni.utils import merge_parameter
-from torch.utils.tensorboard import SummaryWriter
-writer = SummaryWriter(log_dir='runs')
+import nni
+from nni.utils import merge_parameter
+# from torch.utils.tensorboard import SummaryWriter
+# writer = SummaryWriter(log_dir='runs')
 
 class Recommender:
     def __init__(self, handler):
@@ -51,7 +53,7 @@ class Recommender:
         for ep in range(stloc, args.epoch):
             tstFlag = (ep % args.tstEpoch == 0)
             reses = self.trainEpoch()
-            writer.add_scalar('Loss/train', reses['Loss'], ep)
+            # writer.add_scalar('Loss/train', reses['Loss'], ep)
             log(self.makePrint('Train', ep, reses, tstFlag))
             if tstFlag:
                 reses = self.testEpoch()
@@ -59,23 +61,23 @@ class Recommender:
                     best_acc = reses['Recall']
                     best_acc2 = reses['NDCG']
                     es = 0
-                    log('best acc!')
+                    # print('best acc!')
                 else:
                     es += 1
                     if es >= args.patience:
                         print("Early stopping with best Recall and NDCG are", best_acc, best_acc2)
                         break
-                writer.add_scalar('Recall/test', reses['Recall'], ep)
-                writer.add_scalar('Ndcg/test', reses['NDCG'], ep)
-                # nni.report_intermediate_result(reses['Recall'])
+                # writer.add_scalar('Recall/test', reses['Recall'], ep)
+                # writer.add_scalar('Ndcg/test', reses['NDCG'], ep)
+                nni.report_intermediate_result(reses['Recall'])
                 log(self.makePrint('Test', ep, reses, tstFlag))
                 self.saveHistory()
             self.sche.step()
             print()
 
         # reses = self.testEpoch()
-        # nni.report_final_result(best_acc)
         # log(self.makePrint('Test', args.epoch, reses, True))
+        nni.report_final_result(best_acc)
         print("best Recall and NDCG are", best_acc, best_acc2)
         self.saveHistory()
 
@@ -124,7 +126,7 @@ class Recommender:
         num = len(sfIds)
         steps = int(np.ceil(num / args.batch))
         adj = self.handler.torchAdj
-        tpAdj = self.handler.torchTpAdj
+        tpAdj = t.transpose(adj, 0 ,1)
         uAdj = self.handler.torchuAdj
         self.model.train()
         for i in range(steps):
@@ -145,7 +147,7 @@ class Recommender:
             edgeids1 = t.tensor(edgeids1)
             edgeids2 = t.tensor(edgeids2)
 
-            preLoss, uuPreLoss, sslLoss, ssuLoss = self.model.calcLosses(adj, tpAdj, uAdj, uLocs, iLocs, edgeids1, edgeids2, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
+            preLoss, uuPreLoss, sslLoss, ssuLoss = self.model.calcLosses(adj, uAdj, uLocs, iLocs, edgeids1, edgeids2, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
                       
             uuPreLoss *= args.lambda_u           
             ssuLoss *= args.ssu_reg
@@ -189,7 +191,7 @@ class Recommender:
                 usr = usr.long().cuda()
                 trnMask = trnMask.cuda()
 
-                topLocs = self.model.test(usr, trnMask, self.handler.torchAdj, self.handler.torchTpAdj, self.handler.torchuAdj)
+                topLocs = self.model.test(usr, trnMask, self.handler.torchAdj, self.handler.torchuAdj)
 
                 recall, ndcg = self.calcRes(topLocs.cpu().numpy(), self.handler.tstLoader.dataset.tstLocs, usr)
                 epRecall += recall
@@ -247,9 +249,9 @@ if __name__ == '__main__':
     print(f"Using {device} device")
 
     # get parameters form tuner
-    # tuner_params = nni.get_next_parameter()
-    # params = vars(merge_parameter(args, tuner_params))
-    # print(params)
+    tuner_params = nni.get_next_parameter()
+    params = vars(merge_parameter(args, tuner_params))
+    print(params)
     
     log('Start')
     handler = DataHandler()
