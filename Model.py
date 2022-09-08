@@ -312,7 +312,7 @@ class SpAdjDropEdge2(nn.Module):
         usrKey = ui_uKey[usrs]
         itmKey = ui_iKey[itms]
         ui_scores = self.label(usrKey, itmKey, ui_uHyper, ui_iHyper)      
-        _, topLocs = t.topk(ui_scores, args.edgeNum * self.keepRate)
+        _, topLocs = t.topk(ui_scores, int(args.edgeNum * self.keepRate))
 
         val = adj._values()
         idxs = adj._indices()

@@ -1,19 +1,30 @@
 from Params import args
 import os
-# os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # put this line before any cuda using (eg: import torch as t)
-# from setproctitle import setproctitle
-# setproctitle("louis-our2")
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # put this line before any cuda using (eg: import torch as t)
+from setproctitle import setproctitle
+setproctitle("louis-our")
 import torch as t
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 from Model import Our, SpAdjDropEdge
 from DataHandler import DataHandler, negSamp
 import numpy as np
+import random
 import pickle
 # import nni
 # from nni.utils import merge_parameter
 from torch.utils.tensorboard import SummaryWriter
 writer = SummaryWriter(log_dir='runs')
+
+def setup_seed(seed=1024):
+	random.seed(seed)
+	os.environ['PYTHONHASHSEED'] = str(seed) # 为了禁止hash随机化，使得实验可复现
+	np.random.seed(seed)
+	t.manual_seed(seed)
+	t.cuda.manual_seed(seed)
+	t.cuda.manual_seed_all(seed) # if you are using multi-GPU.
+
+# setup_seed(args.seed)
 
 class Recommender:
     def __init__(self, handler):
