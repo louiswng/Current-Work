@@ -1,8 +1,8 @@
 from Params import args
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # put this line before any cuda using (eg: import torch as t)
-from setproctitle import setproctitle
-setproctitle("louis-our")
+# os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # put this line before any cuda using (eg: import torch as t)
+# from setproctitle import setproctitle
+# setproctitle("louis-our2")
 import torch as t
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
@@ -10,10 +10,10 @@ from Model import Our, SpAdjDropEdge
 from DataHandler import DataHandler, negSamp
 import numpy as np
 import pickle
-import nni
-from nni.utils import merge_parameter
-# from torch.utils.tensorboard import SummaryWriter
-# writer = SummaryWriter(log_dir='runs')
+# import nni
+# from nni.utils import merge_parameter
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter(log_dir='runs')
 
 class Recommender:
     def __init__(self, handler):
@@ -53,7 +53,7 @@ class Recommender:
         for ep in range(stloc, args.epoch):
             tstFlag = (ep % args.tstEpoch == 0)
             reses = self.trainEpoch()
-            # writer.add_scalar('Loss/train', reses['Loss'], ep)
+            writer.add_scalar('Loss/train', reses['Loss'], ep)
             log(self.makePrint('Train', ep, reses, tstFlag))
             if tstFlag:
                 reses = self.testEpoch()
@@ -67,9 +67,9 @@ class Recommender:
                     if es >= args.patience:
                         print("Early stopping with best Recall and NDCG are", best_acc, best_acc2)
                         break
-                # writer.add_scalar('Recall/test', reses['Recall'], ep)
-                # writer.add_scalar('Ndcg/test', reses['NDCG'], ep)
-                nni.report_intermediate_result(reses['Recall'])
+                writer.add_scalar('Recall/test', reses['Recall'], ep)
+                writer.add_scalar('Ndcg/test', reses['NDCG'], ep)
+                # nni.report_intermediate_result(reses['Recall'])
                 log(self.makePrint('Test', ep, reses, tstFlag))
                 self.saveHistory()
             self.sche.step()
@@ -77,7 +77,7 @@ class Recommender:
 
         # reses = self.testEpoch()
         # log(self.makePrint('Test', args.epoch, reses, True))
-        nni.report_final_result(best_acc)
+        # nni.report_final_result(best_acc)
         print("best Recall and NDCG are", best_acc, best_acc2)
         self.saveHistory()
 
@@ -136,18 +136,10 @@ class Recommender:
             uLocs, iLocs, _ = self.sampleTrainBatch(batIds, self.handler.trnMat, args.item, args.edgeNum)
             uu_Locs1, uu_Locs2, uu_edgeids = self.sampleTrainBatch(batIds, self.handler.uuMat, args.user, args.uuEdgeNum)
 
-            edgeSampNum = int(args.edgeSampRate * args.edgeNum)
-            if edgeSampNum % 2 == 1:
-                edgeSampNum += 1
-            edgeids1 = np.random.choice(args.edgeNum, edgeSampNum)
-            edgeids2 = np.random.choice(args.edgeNum, edgeSampNum)
-
             uLocs = t.tensor(uLocs)
             iLocs = t.tensor(iLocs)
-            edgeids1 = t.tensor(edgeids1)
-            edgeids2 = t.tensor(edgeids2)
 
-            preLoss, uuPreLoss, sslLoss, ssuLoss = self.model.calcLosses(adj, uAdj, uLocs, iLocs, edgeids1, edgeids2, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
+            preLoss, uuPreLoss, sslLoss, ssuLoss = self.model.calcLosses(adj, uAdj, uLocs, iLocs, self.handler.trnMat, uu_Locs1, uu_Locs2, uu_edgeids, self.handler.uuMat)
                       
             uuPreLoss *= args.lambda_u           
             ssuLoss *= args.ssu_reg
@@ -249,9 +241,9 @@ if __name__ == '__main__':
     print(f"Using {device} device")
 
     # get parameters form tuner
-    tuner_params = nni.get_next_parameter()
-    params = vars(merge_parameter(args, tuner_params))
-    print(params)
+    # tuner_params = nni.get_next_parameter()
+    # params = vars(merge_parameter(args, tuner_params))
+    # print(params)
     
     log('Start')
     handler = DataHandler()

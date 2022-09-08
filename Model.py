@@ -22,7 +22,7 @@ class Our(nn.Module):
         # self.label = LabelNetwork().cuda()
         self.label2 = LabelNetwork2().cuda()
         self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).cuda()
-        self.SpAdjDropEdge2 = SpAdjDropEdge2().cuda()
+        self.SpAdjDropEdge2 = SpAdjDropEdge2(args.keepRate).cuda()
         
     def forward(self, adj, uAdj):
         tpAdj = t.transpose(adj, 0 ,1)
@@ -50,7 +50,7 @@ class Our(nn.Module):
         ssl = t.sum(- t.log(nume / deno))
         return ssl
 
-    def calcLosses(self, adj, uAdj, uids, iids, edgeids1, edgeids2, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
+    def calcLosses(self, adj, uAdj, uids, iids, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
         uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, uAdj)
         ui_pckUlat = ui_ulat[uids] # (batch, d)
         ui_pckIlat = ui_ilat[iids]
@@ -70,10 +70,10 @@ class Our(nn.Module):
         negPred = uu_preds[sampNum:]
         uuPreLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
         
-        adj1 = self.SpAdjDropEdge(adj)
-        adj2 = self.SpAdjDropEdge(adj)
-        # adj1 = self.SpAdjDropEdge2(trnMat, adj, edgeids1, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper) # update per batch
-        # adj2 = self.SpAdjDropEdge2(trnMat, adj, edgeids2, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper)
+        # adj1 = self.SpAdjDropEdge(adj)
+        # adj2 = self.SpAdjDropEdge(adj)
+        adj1 = self.SpAdjDropEdge2(trnMat, adj, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper) # update per batch
+        adj2 = self.SpAdjDropEdge2(trnMat, adj, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper)
         ret = self.forward(adj1, uAdj)
         uEmbeds1, iEmbeds1 = ret[2:4] # global
         ret = self.forward(adj2, uAdj)
@@ -299,29 +299,25 @@ class SpAdjDropEdge(nn.Module):
         return adj
 
 class SpAdjDropEdge2(nn.Module):
-    def __init__(self):
+    def __init__(self, keepRate):
         super(SpAdjDropEdge2, self).__init__()
         self.label = LabelNetwork().cuda()
-        
-    def forward(self, trnMat, adj, edgeids, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper):
+        self.keepRate = keepRate
+
+    def forward(self, trnMat, adj, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper):
         coo = trnMat.tocoo()
-        usrs, itms = coo.row[edgeids], coo.col[edgeids]
+        usrs, itms = coo.row, coo.col
         ui_uKey = t.reshape(t.permute(ui_uKey, dims=[1, 0, 2]), [-1, args.latdim])
         ui_iKey = t.reshape(t.permute(ui_iKey, dims=[1, 0, 2]), [-1, args.latdim])
         usrKey = ui_uKey[usrs]
         itmKey = ui_iKey[itms]
-        ui_scores = self.label(usrKey, itmKey, ui_uHyper, ui_iHyper)
-        _ui_preds = (uEmbeds[usrs]*iEmbeds[itms]).sum(1)
-        delta_scores = (ui_scores-_ui_preds).abs()
-
-        indices = delta_scores.where(delta_scores>args.threshold, t.zeros_like(edgeids).cuda()) # select prefered edge
-        indices = t.nonzero(indices)
-        edge_indices = edgeids[indices]
+        ui_scores = self.label(usrKey, itmKey, ui_uHyper, ui_iHyper)      
+        _, topLocs = t.topk(ui_scores, args.edgeNum * self.keepRate)
 
         val = adj._values()
         idxs = adj._indices()
-        newVals = val[edge_indices]
-        newIdxs = idxs[:, edge_indices]
+        newVals = val[topLocs]
+        newIdxs = idxs[:, topLocs]
         adj = t.sparse.FloatTensor(newIdxs, newVals, adj.shape)  
 
         return adj
