@@ -3,26 +3,29 @@ from torch import nn
 import torch.nn.functional as F
 from Params import args
 
+device = "cuda" if t.cuda.is_available() else "cpu"
+
 xavierInit = nn.init.xavier_uniform_
 zeroInit = lambda x: nn.init.constant_(x, 0.0)
+normalInit = lambda x: nn.init.normal_(x, 0.0, 0.3)
 
 class Our(nn.Module):
     def __init__(self):
         super(Our, self).__init__()
         self.uEmbeds0 = nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
         self.iEmbeds0 = nn.Parameter(xavierInit(t.empty(args.item, args.latdim)))
-        self.LightGCN = LightGCN(self.uEmbeds0, self.iEmbeds0).cuda()
-        self.LightGCN2 = LightGCN2(self.uEmbeds0).cuda()
-        self.prepareKey1 = prepareKey().cuda()
-        self.prepareKey2 = prepareKey().cuda()
-        self.prepareKey3 = prepareKey().cuda()
-        self.HypergraphTransormer1 = HypergraphTransormer().cuda()
-        self.HypergraphTransormer2 = HypergraphTransormer().cuda()
-        self.HypergraphTransormer3 = HypergraphTransormer().cuda()
-        # self.label = LabelNetwork().cuda()
-        self.label2 = LabelNetwork2().cuda()
-        self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).cuda()
-        self.SpAdjDropEdge2 = SpAdjDropEdge2(args.keepRate).cuda()
+        self.LightGCN = LightGCN(self.uEmbeds0, self.iEmbeds0).to(device)
+        self.LightGCN2 = LightGCN2(self.uEmbeds0).to(device)
+        self.prepareKey1 = prepareKey().to(device)
+        self.prepareKey2 = prepareKey().to(device)
+        self.prepareKey3 = prepareKey().to(device)
+        self.HypergraphTransormer1 = HypergraphTransormer().to(device)
+        self.HypergraphTransormer2 = HypergraphTransormer().to(device)
+        self.HypergraphTransormer3 = HypergraphTransormer().to(device)
+        # self.label = LabelNetwork().to(device)
+        self.label2 = LabelNetwork2().to(device)
+        self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).to(device)
+        self.SpAdjDropEdge2 = SpAdjDropEdge2(args.keepRate).to(device)
         
     def forward(self, adj, uAdj):
         tpAdj = t.transpose(adj, 0 ,1)
@@ -50,7 +53,7 @@ class Our(nn.Module):
         ssl = t.sum(- t.log(nume / deno))
         return ssl
 
-    def calcLosses(self, adj, uAdj, uids, iids, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
+    def calcLosses(self, adj, uAdj, uids, iids, edgeids1, edgeids2, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
         uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, uAdj)
         ui_pckUlat = ui_ulat[uids] # (batch, d)
         ui_pckIlat = ui_ilat[iids]
@@ -68,12 +71,12 @@ class Our(nn.Module):
         sampNum = len(uu_ids1) // 2
         posPred = uu_preds[:sampNum]
         negPred = uu_preds[sampNum:]
-        uuPreLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
+        uuPreLoss = args.mult * t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
         
         # adj1 = self.SpAdjDropEdge(adj)
         # adj2 = self.SpAdjDropEdge(adj)
-        adj1 = self.SpAdjDropEdge2(trnMat, adj, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper) # update per batch
-        adj2 = self.SpAdjDropEdge2(trnMat, adj, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper)
+        adj1 = self.SpAdjDropEdge2(trnMat, adj, edgeids1, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper) # update per batch
+        adj2 = self.SpAdjDropEdge2(trnMat, adj, edgeids2, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper)
         ret = self.forward(adj1, uAdj)
         uEmbeds1, iEmbeds1 = ret[2:4] # global
         ret = self.forward(adj2, uAdj)
@@ -115,20 +118,36 @@ class Our(nn.Module):
 class LightGCN(nn.Module):
     def __init__(self, uEmbeds=None, iEmbeds=None):
         super(LightGCN, self).__init__()
-
         self.uEmbeds = uEmbeds if uEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
         self.iEmbeds = iEmbeds if iEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.item, args.latdim)))
-        self.gnnLayers = nn.Sequential(*[GCNLayer() for i in range(args.gcn_hops)])
-    
-    def forward(self, adj, tpAdj):
-        ulats = [self.uEmbeds]
-        ilats = [self.iEmbeds]
-        for gcn in self.gnnLayers:
-            temulat = gcn(adj, ilats[-1])
-            temilat = gcn(tpAdj, ulats[-1])
-            ulats.append(temulat)
-            ilats.append(temilat)
-        return sum(ulats[1:]), sum(ilats[1:])
+        self.gcnLayers = nn.Sequential(*[GCNLayer() for i in range(args.gnn_layer)])
+
+    def forward(self, adj):
+        embeds = t.concat([self.uEmbeds, self.iEmbeds], axis=0)
+        embedLst = [embeds]
+        for gcn in self.gcnLayers:
+            embeds = gcn(adj, embedLst[-1])
+            embedLst.append(embeds)
+        embeds = sum(embedLst)
+        return embeds[:args.user], embeds[args.user:]
+
+    def calcLosses(self, adj, usr, itmP, itmN):
+        uEmbeds, iEmbeds = self.forward(adj)
+        uEmbed = uEmbeds[usr]
+        iEmbedP = iEmbeds[itmP]
+        iEmbedN = iEmbeds[itmN]
+        predsP = t.sum(uEmbed * iEmbedP, axis=-1).view(-1)
+        predsN = t.sum(uEmbed * iEmbedN, axis=-1).view(-1)
+        scoreDiff = predsP - predsN
+        bprLoss = -(scoreDiff).sigmoid().log().sum() / args.batch
+        return bprLoss
+
+    def predAll(self, adj, usr, itm=None):
+        uEmbeds, iEmbeds = self.forward(adj)
+        uEmbed = uEmbeds[usr]
+        if itm is not None:
+            iEmbeds = iEmbeds[itm]
+        return t.mm(uEmbed, t.transpose(iEmbeds, 1, 0))
 
 class LightGCN2(nn.Module):
     def __init__(self, uEmbeds=None):
@@ -301,18 +320,18 @@ class SpAdjDropEdge(nn.Module):
 class SpAdjDropEdge2(nn.Module):
     def __init__(self, keepRate):
         super(SpAdjDropEdge2, self).__init__()
-        self.label = LabelNetwork().cuda()
+        self.label = LabelNetwork().to(device)
         self.keepRate = keepRate
 
-    def forward(self, trnMat, adj, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper):
+    def forward(self, trnMat, adj, edgeids, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper):
         coo = trnMat.tocoo()
-        usrs, itms = coo.row, coo.col
+        usrs, itms = coo.row[edgeids], coo.col[edgeids]
         ui_uKey = t.reshape(t.permute(ui_uKey, dims=[1, 0, 2]), [-1, args.latdim])
         ui_iKey = t.reshape(t.permute(ui_iKey, dims=[1, 0, 2]), [-1, args.latdim])
         usrKey = ui_uKey[usrs]
         itmKey = ui_iKey[itms]
         ui_scores = self.label(usrKey, itmKey, ui_uHyper, ui_iHyper)      
-        _, topLocs = t.topk(ui_scores, int(args.edgeNum * self.keepRate))
+        _, topLocs = t.topk(ui_scores, int(len(edgeids) * self.keepRate))
 
         val = adj._values()
         idxs = adj._indices()
@@ -321,3 +340,51 @@ class SpAdjDropEdge2(nn.Module):
         adj = t.sparse.FloatTensor(newIdxs, newVals, adj.shape)  
 
         return adj
+
+class SHT(nn.Module):
+    def __init__(self):
+        super(SHT, self).__init__()
+        self.LightGCN = LightGCN().to(device)
+        self.prepareKey1 = prepareKey().to(device)
+        self.prepareKey2 = prepareKey().to(device)
+        self.HypergraphTransormer1 = HypergraphTransormer().to(device)
+        self.HypergraphTransormer2 = HypergraphTransormer().to(device)
+        self.label = LabelNetwork().to(device)
+        
+    def forward(self, adj):
+        uEmbeds0, iEmbeds0 = self.LightGCN(adj) # (usr, d)
+        uKey = self.prepareKey1(uEmbeds0)
+        iKey = self.prepareKey2(iEmbeds0)
+        ulat, uHyper = self.HypergraphTransormer1(uEmbeds0, uKey)
+        ilat, iHyper = self.HypergraphTransormer2(iEmbeds0, iKey)
+        
+        return uEmbeds0, iEmbeds0, ulat, ilat, uKey, iKey, uHyper, iHyper
+
+    def calcLosses(self, adj, uids, iids, edgeids, trnMat):
+        uEmbeds0, iEmbeds0, ulat, ilat, uKey, iKey, uHyper, iHyper = self.forward(adj) # local
+
+        pckUlat = ulat[uids] # (batch, d)
+        pckIlat = ilat[iids]
+        preds = t.sum(pckUlat * pckIlat, dim=-1) # (batch, batch, d)
+        sampNum = len(uids) // 2
+        posPred = preds[:sampNum]
+        negPred = preds[sampNum:]
+        preLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
+
+        coo = trnMat.tocoo()
+        usrs, itms = coo.row[edgeids], coo.col[edgeids]
+        uKey = t.reshape(t.permute(uKey, dims=[1, 0, 2]), [-1, args.latdim])
+        iKey = t.reshape(t.permute(iKey, dims=[1, 0, 2]), [-1, args.latdim])
+        usrKey = uKey[usrs]
+        itmKey = iKey[itms]
+        scores = self.label(usrKey, itmKey, uHyper, iHyper)
+        _preds = t.sum(uEmbeds0[usrs]*iEmbeds0[itms], dim=1)
+
+        halfNum = scores.shape[0] // 2
+        fstScores = scores[:halfNum]
+        scdScores = scores[halfNum:]
+        fstPreds = _preds[:halfNum]
+        scdPreds = _preds[halfNum:]
+        sslLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * args.mult * (fstScores-scdScores)))
+
+        return preLoss, sslLoss
