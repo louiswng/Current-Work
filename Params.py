@@ -18,7 +18,7 @@ def parse_args():
     parser.add_argument('--seed', default='1024', type=int, help='random seed')
     parser.add_argument('--gnn_layer', default=2, type=int, help='number of gnn layers')
     parser.add_argument('--topk', default=10, type=int, help='K of top K')
-    parser.add_argument('--keepRate', default=0.5, type=float, help='rate for dropout')
+    parser.add_argument('--keepRate', default=0.5, type=float, help='rate for edge dropout')
     parser.add_argument('--ssl_reg', default=1e-7, type=float, help='weights for SSL regularization')
     parser.add_argument('--temp', default=1.0, type=float, help='temperature in SSL')
     parser.add_argument('--mult', default=100, type=float, help='multiplier for the result')
@@ -29,5 +29,6 @@ def parse_args():
     parser.add_argument('--att_head', default=2, type=int, help='number of attention heads') # 微调
     parser.add_argument('--uuPre_reg', default=1e-7, type=float, help='weights for social graph prediction regularization')
     parser.add_argument('--sal_reg', default=1e-7, type=float, help='weights for SAL regularization')
+    parser.add_argument('--dropRate', default=0.5, type=float, help='rate for dropout')
     return parser.parse_args()
 args = parse_args()

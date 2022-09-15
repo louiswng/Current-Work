@@ -252,6 +252,7 @@ class HypergraphTransformerLayer(nn.Module):
         super(HypergraphTransformerLayer, self).__init__()
         self.linear1 = nn.Linear(args.hyperNum, args.hyperNum, bias=False)
         self.linear2 = nn.Linear(args.hyperNum, args.hyperNum, bias=False)
+        self.dropout = nn.Dropout(args.dropRate)
         self.leakyrelu = nn.LeakyReLU(args.leaky)
 
     def forward(self, lats, key, value, hyper, V):
@@ -260,8 +261,8 @@ class HypergraphTransformerLayer(nn.Module):
         hyper = t.reshape(hyper, [-1, args.att_head, args.latdim//args.att_head]) # (hyperNum, head, d')
         hyper = t.permute(hyper, dims=[1, 2, 0]) # (head, d', hyperNum)
         temlat1 = t.reshape(temlat1 @ hyper, [args.latdim, -1]) # (d, hyperNum)
-        temlat2 = self.leakyrelu(self.linear1(temlat1)) + temlat1
-        temlat3 = self.leakyrelu(self.linear2(temlat2)) + temlat2
+        temlat2 = self.leakyrelu(self.dropout(self.linear1(temlat1))) + temlat1
+        temlat3 = self.leakyrelu(self.dropout(self.linear2(temlat2))) + temlat2
 
         preNewLat = t.reshape(t.t(temlat3) @ V, [-1, args.att_head, args.latdim//args.att_head])
         preNewLat = t.permute(preNewLat, [1, 0, 2])
@@ -276,12 +277,13 @@ class Meta(nn.Module):
         super(Meta, self).__init__()
         self.linear1 = nn.Linear(args.latdim, args.latdim * args.latdim, bias=True)
         self.linear2 = nn.Linear(args.latdim, args.latdim, bias=True)
+        self.dropout = nn.Dropout(args.dropRate)
         self.leakyrelu = nn.LeakyReLU(args.leaky)
     def forward(self, hyper):
         hyper_mean = t.mean(hyper, dim=0, keepdim=True)
         hyper = hyper_mean
-        W1 = t.reshape(self.linear1(hyper), [args.latdim, args.latdim])
-        b1 = self.linear2(hyper)
+        W1 = t.reshape(self.dropout(self.linear1(hyper)), [args.latdim, args.latdim])
+        b1 = self.dropout(self.linear2(hyper))
         def mapping(key):
             ret = self.leakyrelu(key @ W1 + b1)
             return ret
@@ -314,14 +316,15 @@ class Meta2(nn.Module):
         self.linear2 = nn.Linear(args.latdim, args.latdim, bias=True)
         self.linear3 = nn.Linear(args.latdim, args.latdim * args.latdim, bias=True)
         self.linear4 = nn.Linear(args.latdim, args.latdim, bias=True)
+        self.dropout = nn.Dropout(args.dropRate)
         self.leakyrelu = nn.LeakyReLU(args.leaky)
     def forward(self, hyper):
         hyper_mean = t.mean(hyper, dim=0, keepdim=True)
         hyper = hyper_mean
-        W1 = t.reshape(self.linear1(hyper), [args.latdim, args.latdim])
-        b1 = self.linear2(hyper)
-        W2 = t.reshape(self.linear3(hyper), [args.latdim, args.latdim])
-        b2 = self.linear4(hyper)
+        W1 = t.reshape(self.dropout(self.linear1(hyper)), [args.latdim, args.latdim])
+        b1 = self.dropout(self.linear2(hyper))
+        W2 = t.reshape(self.dropout(self.linear3(hyper)), [args.latdim, args.latdim])
+        b2 = self.dropout(self.linear4(hyper))
         def mapping(key, lat):
             ret = self.leakyrelu(key @ W1 + b1)
             ret += self.leakyrelu(lat @ W2 + b2)
