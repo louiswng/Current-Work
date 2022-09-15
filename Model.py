@@ -28,8 +28,7 @@ class Our(nn.Module):
         self.SpAdjDropEdge2 = SpAdjDropEdge2(args.keepRate).to(device)
         
     def forward(self, adj, uAdj):
-        tpAdj = t.transpose(adj, 0 ,1)
-        ui_uEmbed_gcn, ui_iEmbed_gcn = self.LightGCN(adj, tpAdj) # (usr, d)
+        ui_uEmbed_gcn, ui_iEmbed_gcn = self.LightGCN(adj) # (usr, d)
         uu_Embed_gcn = self.LightGCN2(uAdj)
         # Residual Connection, add positional information
         ui_uEmbed0 = self.uEmbeds0 + ui_uEmbed_gcn
@@ -48,30 +47,28 @@ class Our(nn.Module):
     def calcSSL(self, embeds1, embeds2, nodes):
         pckEmbeds1 = F.normalize(embeds1[nodes], 2)
         pckEmbeds2 = F.normalize(embeds2[nodes], 2)
-        nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp) # same node
-        deno = t.sum(t.exp(t.mm(pckEmbeds1, t.transpose(embeds2, 0, 1)) / args.temp), axis=-1)
-        ssl = t.sum(- t.log(nume / deno))
+        nume = ((pckEmbeds1 * pckEmbeds2).sum(-1) / args.temp).exp() # same node
+        deno = (pckEmbeds1.mm(t.transpose(embeds2, 0, 1)) / args.temp).exp().sum(-1)
+        ssl = (-(nume / deno).log()).sum()
         return ssl
 
-    def calcLosses(self, adj, uAdj, uids, iids, edgeids1, edgeids2, trnMat, uu_ids1, uu_ids2, uuedgeids, uuMat):
+    def calcLosses(self, adj, uAdj, usr, itmP, itmN, edgeids1, edgeids2, trnMat, usrP, usrN, uuedgeids, uuMat):
         uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, uAdj)
-        ui_pckUlat = ui_ulat[uids] # (batch, d)
-        ui_pckIlat = ui_ilat[iids]
-        ui_preds = (ui_pckUlat * ui_pckIlat).sum(-1) # (batch, batch, d)
+        ui_pckUlat = ui_ulat[usr]
+        ui_pckIlatP = ui_ilat[itmP]
+        ui_pckIlatN = ui_ilat[itmN]
+        predsP = (ui_pckUlat * ui_pckIlatP).sum(-1)
+        predsN = (ui_pckUlat * ui_pckIlatN).sum(-1)
+        scoreDiff = predsP - predsN
+        preLoss = (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch
 
-        sampNum = len(uids) // 2
-        posPred = ui_preds[:sampNum]
-        negPred = ui_preds[sampNum:]
-        preLoss = (t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))).sum() / args.batch
-
-        uu_pcklat1 = uu_lat[uu_ids1] # (batch, d)
-        uu_pcklat2 = uu_lat[uu_ids2]
-        uu_preds = (uu_pcklat1 * uu_pcklat2).sum(-1) # (batch, batch, d)
-
-        sampNum = len(uu_ids1) // 2
-        posPred = uu_preds[:sampNum]
-        negPred = uu_preds[sampNum:]
-        uuPreLoss = args.mult * t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
+        uu_pcklat = uu_lat[usr]
+        uu_pcklatP = uu_lat[usrP]
+        uu_pcklatN = uu_lat[usrN]
+        predsP = (uu_pcklat * uu_pcklatP).sum(-1)
+        predsN = (uu_pcklat * uu_pcklatN).sum(-1)
+        scoreDiff = predsP - predsN
+        uuPreLoss = args.uuPre_reg * (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch
         
         # adj1 = self.SpAdjDropEdge(adj)
         # adj2 = self.SpAdjDropEdge(adj)
@@ -82,38 +79,36 @@ class Our(nn.Module):
         ret = self.forward(adj2, uAdj)
         uEmbeds2, iEmbeds2 = ret[2:4]
 
-        usrSet = t.unique(uids)
-        itmSet = t.unique(iids)
+        usrSet = t.unique(usr)
+        itmSet = t.unique(t.concat([itmP, itmN]))
         sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
 
         coo = uuMat.tocoo()
         usrs1, usrs2 = coo.row[uuedgeids], coo.col[uuedgeids]
         uu_Key = t.reshape(t.permute(uu_Key, dims=[1, 0, 2]), [-1, args.latdim])
-        usrKey1 = uu_Key[usrs1] # (batch, d)
+        usrKey1 = uu_Key[usrs1]
         usrKey2 = uu_Key[usrs2]
         uu_Hyper = (uu_Hyper + ui_uHyper) / 2
-        usrLat1 = ui_ulat[usrs1] # (batch, d)
+        usrLat1 = ui_ulat[usrs1]
         usrLat2 = ui_ulat[usrs2]
-        uu_scores = self.label2(usrKey1, usrKey2, usrLat1, usrLat2, uu_Hyper) # (batch, k)
-        _uu_preds = (uu_Embed0[usrs1]*uu_Embed0[usrs2]).sum(1)
+        uu_scores = self.label2(usrKey1, usrKey2, usrLat1, usrLat2, uu_Hyper)
+        _uu_preds = (uu_Embed0[usrs1]*uu_Embed0[usrs2]).sum(-1)
 
         halfNum = uu_scores.shape[0] // 2
         fstScores = uu_scores[:halfNum]
         scdScores = uu_scores[halfNum:]
         fstPreds = _uu_preds[:halfNum]
         scdPreds = _uu_preds[halfNum:]
-        ssuLoss = (t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * args.mult * (fstScores-scdScores))).sum()
+        salLoss = args.sal_reg * (t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * (fstScores-scdScores))).sum()
 
-        return preLoss, uuPreLoss, sslLoss, ssuLoss
+        return preLoss, uuPreLoss, sslLoss, salLoss
 
-    def test(self, usr, trnMask, adj, uAdj):
-        ret = self.forward(adj, uAdj)
-        ui_ulat, ui_ilat = ret[2:4]
-        pckUlat = ui_ulat[usr]
-        allPreds = pckUlat @ t.t(ui_ilat)
-        allPreds = allPreds * (1 - trnMask) - trnMask * 1e8
-        _, topLocs = t.topk(allPreds, args.topk)
-        return topLocs
+    def predPairs(self, adj, usr, itm):
+        ret = self.forward(adj)
+        uEmbeds, iEmbeds = ret[2:4] # global embeds
+        uEmbed = uEmbeds[usr]
+        iEmbed = iEmbeds[itm]
+        return (uEmbed * iEmbed).sum(-1)
 
 class LightGCN(nn.Module):
     def __init__(self, uEmbeds=None, iEmbeds=None):
@@ -136,11 +131,17 @@ class LightGCN(nn.Module):
         uEmbed = uEmbeds[usr]
         iEmbedP = iEmbeds[itmP]
         iEmbedN = iEmbeds[itmN]
-        predsP = t.sum(uEmbed * iEmbedP, axis=-1).view(-1)
-        predsN = t.sum(uEmbed * iEmbedN, axis=-1).view(-1)
+        predsP = (uEmbed * iEmbedP).sum(-1)
+        predsN = (uEmbed * iEmbedN).sum(-1)
         scoreDiff = predsP - predsN
         bprLoss = -(scoreDiff).sigmoid().log().sum() / args.batch
         return bprLoss
+
+    def predPairs(self, adj, usr, itm):
+        uEmbeds, iEmbeds = self.forward(adj)
+        uEmbed = uEmbeds[usr]
+        iEmbed = iEmbeds[itm]
+        return (uEmbed * iEmbed).sum(-1)
 
     def predAll(self, adj, usr, itm=None):
         uEmbeds, iEmbeds = self.forward(adj)
@@ -149,12 +150,58 @@ class LightGCN(nn.Module):
             iEmbeds = iEmbeds[itm]
         return t.mm(uEmbed, t.transpose(iEmbeds, 1, 0))
 
+class SGL(nn.Module):
+    def __init__(self):
+        super(SGL, self).__init__()
+        self.uEmbeds = nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
+        self.iEmbeds = nn.Parameter(xavierInit(t.empty(args.item, args.latdim)))
+        self.LightGCN = LightGCN(self.uEmbeds, self.iEmbeds).to(device)
+        self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).to(device)
+
+    def forward(self, adj):
+        uEmbeds, iEmbeds = self.LightGCN(adj)
+        return uEmbeds, iEmbeds
+
+    def calcSSL(self, embeds1, embeds2, nodes):
+        pckEmbeds1 = F.normalize(embeds1[nodes], 2)
+        pckEmbeds2 = F.normalize(embeds2[nodes], 2)
+        nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp) # same node
+        deno = t.sum(t.exp(t.mm(pckEmbeds1, t.transpose(embeds2, 0, 1)) / args.temp), axis=-1)
+        ssl = t.sum(- t.log(nume / deno))
+        return ssl
+
+    def calcLosses(self, adj, usr, itmP, itmN):
+        uEmbeds, iEmbeds = self.forward(adj)
+        uEmbed = uEmbeds[usr]
+        iEmbedP = iEmbeds[itmP]
+        iEmbedN = iEmbeds[itmN]
+        predsP = (uEmbed * iEmbedP).sum(-1)
+        predsN = (uEmbed * iEmbedN).sum(-1)
+        scoreDiff = predsP - predsN
+        bprLoss = -(scoreDiff).sigmoid().log().sum() / args.batch
+
+        adj1 = self.SpAdjDropEdge(adj)
+        adj2 = self.SpAdjDropEdge(adj)
+        uEmbeds1, iEmbeds1 = self.forward(adj1)
+        uEmbeds2, iEmbeds2 = self.forward(adj2)
+        usrSet = t.unique(usr)
+        itmSet = t.unique(t.concat([itmP, itmN]))
+        sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
+
+        return bprLoss, sslLoss
+
+    def predPairs(self, adj, usr, itm):
+        uEmbeds, iEmbeds = self.forward(adj)
+        uEmbed = uEmbeds[usr]
+        iEmbed = iEmbeds[itm]
+        return (uEmbed * iEmbed).sum(-1)
+
 class LightGCN2(nn.Module):
     def __init__(self, uEmbeds=None):
         super(LightGCN2, self).__init__()
 
         self.uEmbeds = uEmbeds if uEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
-        self.gnnLayers = nn.Sequential(*[GCNLayer() for i in range(args.gcn_hops)])
+        self.gnnLayers = nn.Sequential(*[GCNLayer() for i in range(args.gnn_layer)])
     
     def forward(self, adj):
         ulats = [self.uEmbeds]
@@ -313,10 +360,8 @@ class SpAdjDropEdge(nn.Module):
         mask = ((t.rand(edgeNum) + self.keepRate).floor()).type(t.bool)
         newVals = vals[mask] / self.keepRate
         newIdxs = idxs[:, mask]
-        adj = t.sparse.FloatTensor(newIdxs, newVals, adj.shape)
+        return t.sparse.FloatTensor(newIdxs, newVals, adj.shape)
         
-        return adj
-
 class SpAdjDropEdge2(nn.Module):
     def __init__(self, keepRate):
         super(SpAdjDropEdge2, self).__init__()
@@ -337,14 +382,14 @@ class SpAdjDropEdge2(nn.Module):
         idxs = adj._indices()
         newVals = val[topLocs]
         newIdxs = idxs[:, topLocs]
-        adj = t.sparse.FloatTensor(newIdxs, newVals, adj.shape)  
-
-        return adj
+        return t.sparse.FloatTensor(newIdxs, newVals, adj.shape)  
 
 class SHT(nn.Module):
     def __init__(self):
         super(SHT, self).__init__()
-        self.LightGCN = LightGCN().to(device)
+        self.uEmbeds = nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
+        self.iEmbeds = nn.Parameter(xavierInit(t.empty(args.item, args.latdim)))
+        self.LightGCN = LightGCN(self.uEmbeds, self.iEmbeds).to(device)
         self.prepareKey1 = prepareKey().to(device)
         self.prepareKey2 = prepareKey().to(device)
         self.HypergraphTransormer1 = HypergraphTransormer().to(device)
@@ -352,7 +397,9 @@ class SHT(nn.Module):
         self.label = LabelNetwork().to(device)
         
     def forward(self, adj):
-        uEmbeds0, iEmbeds0 = self.LightGCN(adj) # (usr, d)
+        uEmbeds, iEmbeds = self.LightGCN(adj)
+        uEmbeds0 = uEmbeds + self.uEmbeds # residual connection
+        iEmbeds0 = iEmbeds + self.iEmbeds
         uKey = self.prepareKey1(uEmbeds0)
         iKey = self.prepareKey2(iEmbeds0)
         ulat, uHyper = self.HypergraphTransormer1(uEmbeds0, uKey)
@@ -360,16 +407,16 @@ class SHT(nn.Module):
         
         return uEmbeds0, iEmbeds0, ulat, ilat, uKey, iKey, uHyper, iHyper
 
-    def calcLosses(self, adj, uids, iids, edgeids, trnMat):
-        uEmbeds0, iEmbeds0, ulat, ilat, uKey, iKey, uHyper, iHyper = self.forward(adj) # local
+    def calcLosses(self, adj, usr, itmP, itmN, edgeids, trnMat):
+        uEmbeds0, iEmbeds0, ulat, ilat, uKey, iKey, uHyper, iHyper = self.forward(adj)
 
-        pckUlat = ulat[uids] # (batch, d)
-        pckIlat = ilat[iids]
-        preds = t.sum(pckUlat * pckIlat, dim=-1) # (batch, batch, d)
-        sampNum = len(uids) // 2
-        posPred = preds[:sampNum]
-        negPred = preds[sampNum:]
-        preLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (posPred - negPred))) / args.batch
+        pckUlat = ulat[usr]
+        pckIlatP = ilat[itmP]
+        pckIlatN = ilat[itmN]
+        predsP = (pckUlat * pckIlatP).sum(-1)
+        predsN = (pckUlat * pckIlatN).sum(-1)
+        scoreDiff = predsP - predsN
+        preLoss = (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch
 
         coo = trnMat.tocoo()
         usrs, itms = coo.row[edgeids], coo.col[edgeids]
@@ -378,13 +425,19 @@ class SHT(nn.Module):
         usrKey = uKey[usrs]
         itmKey = iKey[itms]
         scores = self.label(usrKey, itmKey, uHyper, iHyper)
-        _preds = t.sum(uEmbeds0[usrs]*iEmbeds0[itms], dim=1)
+        _preds = (uEmbeds0[usrs]*iEmbeds0[itms]).sum(1)
 
         halfNum = scores.shape[0] // 2
         fstScores = scores[:halfNum]
         scdScores = scores[halfNum:]
         fstPreds = _preds[:halfNum]
         scdPreds = _preds[halfNum:]
-        sslLoss = t.sum(t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * args.mult * (fstScores-scdScores)))
-
+        sslLoss = args.ssl_reg * (t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * (fstScores-scdScores))).sum()
         return preLoss, sslLoss
+
+    def predPairs(self, adj, usr, itm):
+        ret = self.forward(adj)
+        uEmbeds, iEmbeds = ret[2:4] # global embeds
+        uEmbed = uEmbeds[usr]
+        iEmbed = iEmbeds[itm]
+        return (uEmbed * iEmbed).sum(-1)
