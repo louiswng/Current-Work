@@ -113,7 +113,7 @@ class Recommender():
             epPreLoss += preLoss.item()
             epsslLoss += sslLoss.item()
 
-            self.opt.zero_grad()
+            self.opt.zero_grad(set_to_none=True)
             loss.backward()
             self.opt.step()
             # log('Step %d/%d: loss = %.2f, preLoss = %.2f, sslLoss = %.2f, regLoss = %.2f         ' % (i, steps, loss, preLoss, sslLoss, regLoss), save=False, oneline=True)

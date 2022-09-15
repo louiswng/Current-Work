@@ -14,7 +14,7 @@ def parse_args():
     parser.add_argument('--load_model', default=None, help='model name to load')
     parser.add_argument('--data', default='yelp', type=str, help='name of dataset')
     parser.add_argument('--gpu', default='0', type=str, help='gpu indices')
-    parser.add_argument('--patience', default='7', type=int, help='early stopping patience')
+    parser.add_argument('--patience', default='10', type=int, help='early stopping patience')
     parser.add_argument('--seed', default='1024', type=int, help='random seed')
     parser.add_argument('--gnn_layer', default=2, type=int, help='number of gnn layers')
     parser.add_argument('--topk', default=10, type=int, help='K of top K')
@@ -27,5 +27,7 @@ def parse_args():
     parser.add_argument('--hyperNum', default=128, type=int, help='number of hyper edges')
     parser.add_argument('--leaky', default=0.5, type=float, help='slope for leaky relu')
     parser.add_argument('--att_head', default=2, type=int, help='number of attention heads') # 微调
+    parser.add_argument('--uuPre_reg', default=1e-7, type=float, help='weights for social graph prediction regularization')
+    parser.add_argument('--sal_reg', default=1e-7, type=float, help='weights for SAL regularization')
     return parser.parse_args()
 args = parse_args()

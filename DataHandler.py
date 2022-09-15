@@ -48,7 +48,18 @@ class DataHandler():
 		vals = t.from_numpy(mat.data.astype(np.float32))
 		shape = t.Size(mat.shape)
 		return t.sparse.FloatTensor(idxs, vals, shape).to(device)
+
+	def makeTorchuAdj(self, mat):
+		mat = (mat != 0) * 1.0
+		mat = (mat+ sp.eye(mat.shape[0])) * 1.0
+		mat = self.normalizeAdj(mat)
 		
+		# make cuda tensor
+		idxs = t.from_numpy(np.vstack([mat.row, mat.col]).astype(np.int64))
+		vals = t.from_numpy(mat.data.astype(np.float32))
+		shape = t.Size(mat.shape)
+		return t.sparse.FloatTensor(idxs, vals, shape).to(device)
+
 	def LoadData(self):
 		with open(self.trnfile, 'rb') as fs: # csr
 			trnMat = pickle.load(fs)
@@ -58,28 +69,33 @@ class DataHandler():
 			uuMat = pickle.load(fs)
 		args.user, args.item = trnMat.shape
 		args.edgeNum = len(trnMat.data)
+		args.uuEdgeNum = len(uuMat.data)
 		self.torchAdj = self.makeTorchAdj(trnMat)
+		self.torchuAdj = self.makeTorchuAdj(uuMat)
 
 		trnMat = trnMat.tocoo()
 		uuMat = uuMat.tocoo()
 		self.trnMat = trnMat
 		self.uuMat = uuMat
 		trainData = np.hstack([trnMat.row.reshape(-1, 1), trnMat.col.reshape(-1, 1)]).tolist() # (u, v) list
+		uuData = np.hstack([uuMat.row.reshape(-1, 1), uuMat.col.reshape(-1, 1)]).tolist()
 
-		trnData = BPRData(trainData, trnMat, isTraining=True)
-		tstData = BPRData(testData, trnMat, isTraining=False)
-		self.trnLoader = DataLoader(trnData, batch_size=args.batch, shuffle=True, num_workers=0)
-		self.tstLoader = DataLoader(tstData, batch_size=args.test_batch*1000, shuffle=False, num_workers=0)
+		trnData = BPRData(trainData, trnMat, uuData, uuMat, isTraining=True)
+		tstData = BPRData(testData, trnMat, uuData, uuMat, isTraining=False)
+		self.trnLoader = DataLoader(trnData, batch_size=args.batch, shuffle=True, num_workers=0, pin_memory=True)
+		self.tstLoader = DataLoader(tstData, batch_size=args.test_batch*1000, shuffle=False, num_workers=0, pin_memory=True)
 
 class BPRData(Dataset):
-	def __init__(self, data, coomat, negNum=None, isTraining=None):
+	def __init__(self, data, coomat, uuData, uumat, negNum=None, isTraining=None):
 		super(BPRData, self).__init__()
 		self.data = data
-		self.coomat = coomat
+		self.uuData = uuData
 		self.dokmat = coomat.todok()
+		self.uuDokmat = uumat.todok()
 		self.negNum = negNum
 		self.isTraining = isTraining
 		self.negs = np.zeros(len(self.data)).astype(np.int32)
+		self.uuNegs = np.zeros(len(self.uuData)).astype(np.int32)
 		
 	def negSampling(self):
 		assert self.isTraining, 'No need to sample when testing'
@@ -91,11 +107,19 @@ class BPRData(Dataset):
 					break
 			self.negs[i] = iNeg
 
+		for i in range(len(self.uuData)):
+			u = self.uuData[i][0]
+			while True:
+				uNeg = np.random.randint(args.user)
+				if (u, uNeg) not in self.uuDokmat:
+					break
+			self.uuNegs[i] = uNeg
+		
 	def __len__(self):
 		return len(self.data)
 
 	def __getitem__(self, idx):
 		if self.isTraining: # # usr: pos: neg = 1: 1: 1
-			return self.data[idx][0], self.data[idx][1], self.negs[idx]
+			return self.data[idx][0], self.data[idx][1], self.negs[idx]#, self.uuData[idx][0], self.uuData[idx][1], self.uuNegs[idx]
 		else:
 			return self.data[idx][0], self.data[idx][1]

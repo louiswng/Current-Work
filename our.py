@@ -2,14 +2,14 @@ from Params import args
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 from setproctitle import setproctitle
-setproctitle("louis-try")
+setproctitle("louis-our")
 import torch as t
 from torch.utils.tensorboard import SummaryWriter
 import random
 import numpy as np
 import pickle
 from DataHandler import DataHandler
-from Model import LightGCN, SHT
+from Model import Our
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 
@@ -32,9 +32,10 @@ class Recommender():
     def __init__(self, handler):
         self.handler = handler
         print('User', args.user, 'Item', args.item)
-        print('Num of interactions', len(self.handler.trnLoader.dataset.rows))
+        print('Num of interactions', args.edgeNum)
+        print('Num of social interactions', args.uuEdgeNum)
         self.metrics = dict()
-        mets = ['Loss', 'preLoss', 'Recall', 'NDCG']
+        mets = ['Loss', 'preLoss', 'HR', 'NDCG']
         for met in mets:
             self.metrics['Train' + met] = list()
             self.metrics['Test' + met] = list()
@@ -59,7 +60,7 @@ class Recommender():
         else:
             stloc = 0
             log('Model Initialized')
-        bstMtc = {'Recall': 0.0, 'NDCG': 0.0}
+        bstMtc = {'HR': 0.0, 'NDCG': 0.0}
         for ep in range(stloc, args.epoch):
             tstFlag = (ep % args.tstEpoch == 0)
             reses = self.trainEpoch()
@@ -67,7 +68,7 @@ class Recommender():
             log(self.makePrint('Train', ep, reses, tstFlag))
             if tstFlag:
                 reses = self.testEpoch()
-                if reses['Recall'] > bstMtc['Recall']:
+                if reses['HR'] > bstMtc['HR']:
                     bstMtc = reses
                     es = 0
                 else:
@@ -75,88 +76,116 @@ class Recommender():
                     if es >= args.patience:
                         log('Early stop')
                         break
-                writer.add_scalar('Recall/test', reses['Recall'], ep)
+                writer.add_scalar('HR/test', reses['HR'], ep)
                 writer.add_scalar('NDCG/test', reses['NDCG'], ep)
                 log(self.makePrint('Test', ep, reses, tstFlag))
                 # self.saveHistory()
             self.sche.step()
             print()
-        log('The best metric are %.4f, %.4f' % (bstMtc['Recall'], bstMtc['NDCG']), save=True, oneline=True)
+        log('The best metric are %.4f, %.4f \n' % (bstMtc['HR'], bstMtc['NDCG']), save=True, oneline=True)
         self.saveHistory()
 
     def preperaModel(self):
-        self.model = LightGCN().to(device)
+        self.model = Our().to(device)
         self.opt = t.optim.Adam(self.model.parameters(), lr=args.lr)
         self.sche = t.optim.lr_scheduler.ExponentialLR(self.opt, gamma=args.decay)
+
+    def sampSocialGraph(self, uuMat): # 随机选出 batch 个 usr, usrP, usrN
+        batIdx = t.randint(high=len(uuMat.data), size=(args.batch,))
+        usr = t.from_numpy(uuMat.row[batIdx])
+        usrP = t.from_numpy(uuMat.col[batIdx])
+        usrN = t.from_numpy(self.handler.trnLoader.dataset.uuNegs[batIdx])
+        return usr, usrP, usrN
+
+    def sampEdge(self, edgeSampRate, edgeNum):
+        edgeSampNum = int(edgeSampRate * edgeNum)
+        if edgeSampNum % 2 == 1:
+            edgeSampNum += 1
+        return np.random.choice(edgeNum, edgeSampNum)
 
     def trainEpoch(self):
         trnLoader = self.handler.trnLoader
         trnLoader.dataset.negSampling()
-        epLoss, epPreLoss = [0] * 2
+        epLoss, epPreLoss, epuuPreLoss, epsslLoss, epsalLoss = [0] * 5
         steps = len(trnLoader.dataset) // args.batch
         self.model.train()
         for i, (usr, itmP, itmN) in enumerate(trnLoader):
             usr, itmP, itmN = usr.long().to(device), itmP.long().to(device), itmN.long().to(device)
-            preLoss = self.model.calcLosses(self.handler.torchAdj, usr, itmP, itmN)
+            usr1, usrP, usrN = self.sampSocialGraph(self.handler.uuMat)
+            usr1, usrP, usrN = usr1.long().to(device), usrP.long().to(device), usrN.long().to(device)
+            edgeids1 = self.sampEdge(args.edgeSampRate, args.edgeNum)
+            edgeids2 = self.sampEdge(args.edgeSampRate, args.edgeNum)
+            uuedgeids = self.sampEdge(args.edgeSampRate, args.uuEdgeNum)         
+            preLoss, uuPreLoss, sslLoss, salLoss = self.model.calcLosses(self.handler.torchAdj, self.handler.torchuAdj, 
+                                                                        usr, itmP, itmN, edgeids1, edgeids2, self.handler.trnMat,
+                                                                        usr1, usrP, usrN, uuedgeids, self.handler.uuMat)
 
             regLoss = 0
             for W in self.model.parameters():
                 regLoss += W.norm(2).square()
             regLoss *= args.reg
 
-            loss = preLoss + regLoss
+            loss = preLoss + uuPreLoss + sslLoss + salLoss + regLoss
             epLoss += loss.item()
             epPreLoss += preLoss.item()
+            epuuPreLoss += uuPreLoss.item()
+            epsslLoss += sslLoss.item()
+            epsalLoss += salLoss.item()
 
-            self.opt.zero_grad()
+            self.opt.zero_grad(set_to_none=True)
             loss.backward()
             self.opt.step()
-            log('Step %d/%d: loss = %.2f, preLoss = %.2f, regLoss = %.2f         ' % (i, steps, loss, preLoss, regLoss), save=False, oneline=True)
+            # log('Step %d/%d: loss = %.2f, preLoss = %.2f, regLoss = %.2f         ' % (i, steps, loss, preLoss, regLoss), save=False, oneline=True)
         ret = dict()
         ret['Loss'] = epLoss / steps
         ret['preLoss'] = epPreLoss / steps
+        ret['uuPreLoss'] = epuuPreLoss / steps
+        ret['sslLoss'] = epsslLoss / steps
+        ret['salLoss'] = epsalLoss / steps
         return ret
 
     def testEpoch(self):
         tstLoader = self.handler.tstLoader
-        epRecall, epNdcg = [0] * 2
+        epHr, epNdcg = [0] * 2
         size = len(tstLoader.dataset)
-        steps = size // args.test_batch
+        tstBat = args.test_batch * 100
+        steps = size // tstBat
         self.model.eval()
         with t.no_grad():
-            for i, (usr, trnMask) in enumerate(tstLoader):
-                usr, trnMask = usr.long().to(device), trnMask.to(device)
-                allPreds = self.model.predAll(self.handler.torchAdj, usr)
-                allPreds = allPreds * (1 - trnMask) - trnMask * 1e8
-
-                _, topLocs = t.topk(allPreds, args.topk)
-                recall, ndcg = self.calcRes(topLocs.cpu().numpy(), tstLoader.dataset.tstLocs, usr)
-                epRecall += recall
+            for i, (usr, itm) in enumerate(tstLoader):
+                usr, itm = usr.long().to(device), itm.long().to(device)
+                batch = usr.shape[0] / 100
+                preds = self.model.predPairs(self.handler.torchAdj, self.handler.torchuAdj, usr, itm)
+                hr, ndcg = self.calcRes(preds, itm)
+                epHr += hr
                 epNdcg += ndcg
-                log('Steps %d/%d: recall = %.2f, ndcg = %.2f          ' % (i, steps, recall, ndcg), save=False, oneline=True)
+                # log('Steps %d/%d: hr = %.2f, ndcg = %.2f          ' % (i, steps, hr/batch, ndcg/batch), save=False, oneline=True)
         ret = dict()
-        ret['Recall'] = epRecall / size
-        ret['NDCG'] = epNdcg / size
+        ret['HR'] = epHr / (size/100)
+        ret['NDCG'] = epNdcg / (size/100)
         return ret
-    
-    def calcRes(self, topLocs, tstLocs, batIds):
-        assert topLocs.shape[0] == len(batIds)
-        allRecall = allNdcg = 0
-        for i in range(len(batIds)):
-            temTopLocs = list(topLocs[i])
-            temTstLocs = tstLocs[batIds[i]]
-            tstNum = len(temTstLocs)
-            maxDcg = np.sum([np.reciprocal(np.log2(loc + 2)) for loc in range(min(tstNum, args.topk))])
-            recall = dcg = 0
-            for val in temTstLocs:
-                if val in temTopLocs:
-                    recall += 1
-                    dcg += np.reciprocal(np.log2(temTopLocs.index(val) + 2))
-            recall = recall / tstNum
-            ndcg = dcg / maxDcg
-            allRecall += recall
-            allNdcg += ndcg
-        return allRecall, allNdcg
+
+    def calcMet(self, gtItm, recommends):
+        hr, ndcg = [0] * 2
+        if gtItm in recommends:
+            hr = 1
+            index = recommends.index(gtItm)
+            ndcg = np.reciprocal(np.log2(index+2))
+        return hr, ndcg
+
+    def calcRes(self, preds, itm):
+        batch = int(preds.shape[0] / 100)
+        batHR, batNdcg = [0] * 2
+        for i in range(batch):
+            batch_scores = preds[i*100:(i+1)*100].view(-1)
+            _, topLocs = t.topk(batch_scores, args.topk)
+            tmpItm = itm[i*100: (i+1)*100] # pos:neg = 1:99
+            recommends = t.take(tmpItm, topLocs).cpu().numpy().tolist()
+            gtItm = tmpItm[0].item()
+            hr, ndcg = self.calcMet(gtItm, recommends)
+            batHR += hr
+            batNdcg += ndcg
+        return batHR, batNdcg
 
     def saveHistory(self):
         if args.epoch == 0:

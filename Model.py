@@ -52,24 +52,27 @@ class Our(nn.Module):
         ssl = (-(nume / deno).log()).sum()
         return ssl
 
-    def calcLosses(self, adj, uAdj, usr, itmP, itmN, edgeids1, edgeids2, trnMat, usrP, usrN, uuedgeids, uuMat):
+    def calcLosses(self, adj, uAdj, usr, itmP, itmN, edgeids1, edgeids2, trnMat, usr1, usrP, usrN, uuedgeids, uuMat):
         uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, uAdj)
-        ui_pckUlat = ui_ulat[usr]
-        ui_pckIlatP = ui_ilat[itmP]
-        ui_pckIlatN = ui_ilat[itmN]
-        predsP = (ui_pckUlat * ui_pckIlatP).sum(-1)
-        predsN = (ui_pckUlat * ui_pckIlatN).sum(-1)
+        # preds on ui graph
+        pckUlat = ui_ulat[usr]
+        pckIlatP = ui_ilat[itmP]
+        pckIlatN = ui_ilat[itmN]
+        predsP = (pckUlat * pckIlatP).sum(-1)
+        predsN = (pckUlat * pckIlatN).sum(-1)
         scoreDiff = predsP - predsN
         preLoss = (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch
 
-        uu_pcklat = uu_lat[usr]
-        uu_pcklatP = uu_lat[usrP]
-        uu_pcklatN = uu_lat[usrN]
-        predsP = (uu_pcklat * uu_pcklatP).sum(-1)
-        predsN = (uu_pcklat * uu_pcklatN).sum(-1)
+        # preds on uu graph
+        pcklat = uu_lat[usr1]
+        pcklatP = uu_lat[usrP]
+        pcklatN = uu_lat[usrN]
+        predsP = (pcklat * pcklatP).sum(-1)
+        predsN = (pcklat * pcklatN).sum(-1)
         scoreDiff = predsP - predsN
-        uuPreLoss = args.uuPre_reg * (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch
+        uuPreLoss = args.mult * args.uuPre_reg * (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch
         
+        # labeled edge dropout SGL on ui graph
         # adj1 = self.SpAdjDropEdge(adj)
         # adj2 = self.SpAdjDropEdge(adj)
         adj1 = self.SpAdjDropEdge2(trnMat, adj, edgeids1, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper) # update per batch
@@ -78,11 +81,11 @@ class Our(nn.Module):
         uEmbeds1, iEmbeds1 = ret[2:4] # global
         ret = self.forward(adj2, uAdj)
         uEmbeds2, iEmbeds2 = ret[2:4]
-
-        usrSet = t.unique(usr)
+        usrSet = t.unique(usr1)
         itmSet = t.unique(t.concat([itmP, itmN]))
         sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
 
+        # self-augumented learning on uu graph
         coo = uuMat.tocoo()
         usrs1, usrs2 = coo.row[uuedgeids], coo.col[uuedgeids]
         uu_Key = t.reshape(t.permute(uu_Key, dims=[1, 0, 2]), [-1, args.latdim])
@@ -103,8 +106,8 @@ class Our(nn.Module):
 
         return preLoss, uuPreLoss, sslLoss, salLoss
 
-    def predPairs(self, adj, usr, itm):
-        ret = self.forward(adj)
+    def predPairs(self, adj, uAdj, usr, itm):
+        ret = self.forward(adj, uAdj)
         uEmbeds, iEmbeds = ret[2:4] # global embeds
         uEmbed = uEmbeds[usr]
         iEmbed = iEmbeds[itm]
@@ -142,13 +145,6 @@ class LightGCN(nn.Module):
         uEmbed = uEmbeds[usr]
         iEmbed = iEmbeds[itm]
         return (uEmbed * iEmbed).sum(-1)
-
-    def predAll(self, adj, usr, itm=None):
-        uEmbeds, iEmbeds = self.forward(adj)
-        uEmbed = uEmbeds[usr]
-        if itm is not None:
-            iEmbeds = iEmbeds[itm]
-        return t.mm(uEmbed, t.transpose(iEmbeds, 1, 0))
 
 class SGL(nn.Module):
     def __init__(self):
@@ -199,7 +195,6 @@ class SGL(nn.Module):
 class LightGCN2(nn.Module):
     def __init__(self, uEmbeds=None):
         super(LightGCN2, self).__init__()
-
         self.uEmbeds = uEmbeds if uEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
         self.gnnLayers = nn.Sequential(*[GCNLayer() for i in range(args.gnn_layer)])
     
@@ -225,7 +220,7 @@ class prepareKey(nn.Module):
     def forward(self, nodeEmbed):
         key = t.reshape(nodeEmbed @ self.K, [-1, args.att_head, args.latdim//args.att_head])
         key = t.permute(key, dims=[1, 0, 2])
-        return key
+        return key # (head, n, d')
 
 class prepareValue(nn.Module):
     def __init__(self):
@@ -235,7 +230,7 @@ class prepareValue(nn.Module):
     def forward(self, nodeEmbed):
         value = t.reshape(nodeEmbed @ self.V, [-1, args.att_head, args.latdim//args.att_head])
         value = t.permute(value, dims=[1, 2, 0])
-        return value
+        return value # (head, d', n)
 
 class HypergraphTransormer(nn.Module):
     def __init__(self):
@@ -260,11 +255,11 @@ class HypergraphTransformerLayer(nn.Module):
         self.leakyrelu = nn.LeakyReLU(args.leaky)
 
     def forward(self, lats, key, value, hyper, V):
-        temlat1 = value @ key
+        temlat1 = value @ key # (head, d', d')
         # prepare query
-        hyper = t.reshape(hyper, [-1, args.att_head, args.latdim//args.att_head])
-        hyper = t.permute(hyper, dims=[1, 2, 0])
-        temlat1 = t.reshape(temlat1 @ hyper, [args.latdim, -1])
+        hyper = t.reshape(hyper, [-1, args.att_head, args.latdim//args.att_head]) # (hyperNum, head, d')
+        hyper = t.permute(hyper, dims=[1, 2, 0]) # (head, d', hyperNum)
+        temlat1 = t.reshape(temlat1 @ hyper, [args.latdim, -1]) # (d, hyperNum)
         temlat2 = self.leakyrelu(self.linear1(temlat1)) + temlat1
         temlat3 = self.leakyrelu(self.linear2(temlat2)) + temlat2
 
@@ -298,6 +293,8 @@ class LabelNetwork(nn.Module):
         self.meta = Meta()
         self.linear1 = nn.Linear(2*args.latdim, args.latdim, bias=True)
         self.linear2 = nn.Linear(args.latdim, 1, bias=True)
+        self.bn1 = nn.BatchNorm1d(args.latdim)
+        self.bn2 = nn.BatchNorm1d(1)
         self.leakyrelu = nn.LeakyReLU(args.leaky)
         self.sigmoid = nn.Sigmoid()
     def forward(self, usrKey, itmKey, uHyper, iHyper):
@@ -306,8 +303,8 @@ class LabelNetwork(nn.Module):
         ulat = uMapping(usrKey)
         ilat = iMapping(itmKey)
         lat = t.cat((ulat, ilat), dim=-1)
-        lat = self.leakyrelu(self.linear1(lat)) + ulat + ilat
-        ret = t.reshape(self.sigmoid(self.linear2(lat)), [-1])
+        lat = self.leakyrelu(self.bn1(self.linear1(lat))) + ulat + ilat
+        ret = t.reshape(self.sigmoid(self.bn2(self.linear2(lat))), [-1])
         return ret
 
 class Meta2(nn.Module):
@@ -337,6 +334,8 @@ class LabelNetwork2(nn.Module):
         self.meta = Meta2()
         self.linear1 = nn.Linear(2*args.latdim, args.latdim, bias=True)
         self.linear2 = nn.Linear(args.latdim, 1, bias=True)
+        self.bn1 = nn.BatchNorm1d(args.latdim)
+        self.bn2 = nn.BatchNorm1d(1)
         self.leakyrelu = nn.LeakyReLU(args.leaky)
         self.sigmoid = nn.Sigmoid()
     def forward(self, Key1, Key2, Lat1, Lat2, Hyper):
@@ -344,8 +343,8 @@ class LabelNetwork2(nn.Module):
         lat1 = Mapping(Key1, Lat1)
         lat2 = Mapping(Key2, Lat2)
         lat = t.cat((lat1, lat2), dim=-1)
-        lat = self.leakyrelu(self.linear1(lat)) + lat1 + lat2
-        ret = t.reshape(self.sigmoid(self.linear2(lat)), [-1])
+        lat = self.leakyrelu(self.bn1(self.linear1(lat))) + lat1 + lat2
+        ret = t.reshape(self.sigmoid(self.bn2(self.linear2(lat))), [-1])
         return ret
 
 class SpAdjDropEdge(nn.Module):
