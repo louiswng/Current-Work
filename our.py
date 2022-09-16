@@ -1,6 +1,6 @@
 from Params import args
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+# os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 from setproctitle import setproctitle
 setproctitle("louis-our")
 import torch as t
@@ -8,12 +8,14 @@ from torch.utils.tensorboard import SummaryWriter
 import random
 import numpy as np
 import pickle
+import nni
+from nni.utils import merge_parameter
 from DataHandler import DataHandler
 from Model import Our
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 
-writer = SummaryWriter(log_dir='runs')
+# writer = SummaryWriter(log_dir='runs')
 
 def setup_seed(seed=1024):
 	random.seed(seed)
@@ -64,7 +66,7 @@ class Recommender():
         for ep in range(stloc, args.epoch):
             tstFlag = (ep % args.tstEpoch == 0)
             reses = self.trainEpoch()
-            writer.add_scalar('Loss/train', reses['Loss'], ep)
+            # writer.add_scalar('Loss/train', reses['Loss'], ep)
             log(self.makePrint('Train', ep, reses, tstFlag))
             if tstFlag:
                 reses = self.testEpoch()
@@ -76,12 +78,14 @@ class Recommender():
                     if es >= args.patience:
                         log('Early stop')
                         break
-                writer.add_scalar('HR/test', reses['HR'], ep)
-                writer.add_scalar('NDCG/test', reses['NDCG'], ep)
+                # writer.add_scalar('HR/test', reses['HR'], ep)
+                # writer.add_scalar('NDCG/test', reses['NDCG'], ep)
+                nni.report_intermediate_result(reses['HR'])
                 log(self.makePrint('Test', ep, reses, tstFlag))
                 # self.saveHistory()
             self.sche.step()
             print()
+        nni.report_final_result(bstMtc['HR'])
         log('The best metric are %.4f, %.4f \n' % (bstMtc['HR'], bstMtc['NDCG']), save=True, oneline=True)
         self.saveHistory()
 
@@ -211,6 +215,11 @@ class Recommender():
 
 if __name__=="__main__":
     logger.saveDefault = True
+
+    # get parameters form tuner
+    tuner_params = nni.get_next_parameter()
+    params = vars(merge_parameter(args, tuner_params))
+    print(params)
 
     log('Start')
     handler = DataHandler()

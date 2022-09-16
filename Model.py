@@ -28,12 +28,8 @@ class Our(nn.Module):
         self.SpAdjDropEdge2 = SpAdjDropEdge2(args.keepRate).to(device)
         
     def forward(self, adj, uAdj):
-        ui_uEmbed_gcn, ui_iEmbed_gcn = self.LightGCN(adj) # (usr, d)
-        uu_Embed_gcn = self.LightGCN2(uAdj)
-        # Residual Connection, add positional information
-        ui_uEmbed0 = self.uEmbeds0 + ui_uEmbed_gcn
-        ui_iEmbed0 = self.iEmbeds0 + ui_iEmbed_gcn
-        uu_Embed0 = self.uEmbeds0 + uu_Embed_gcn
+        ui_uEmbed0, ui_iEmbed0 = self.LightGCN(adj) # (usr, d)
+        uu_Embed0 = self.LightGCN2(uAdj)
 
         ui_uKey = self.prepareKey1(ui_uEmbed0)
         ui_iKey = self.prepareKey2(ui_iEmbed0)
@@ -203,7 +199,7 @@ class LightGCN2(nn.Module):
         for gcn in self.gnnLayers:
             temulat = gcn(adj, ulats[-1])
             ulats.append(temulat)
-        return sum(ulats[1:])
+        return sum(ulats)
 
 class GCNLayer(nn.Module):
     def __init__(self):
@@ -223,9 +219,9 @@ class prepareKey(nn.Module):
         return key # (head, n, d')
 
 class prepareValue(nn.Module):
-    def __init__(self):
+    def __init__(self, V=None):
         super(prepareValue, self).__init__()
-        self.V = nn.Parameter(xavierInit(t.empty(args.latdim, args.latdim)))
+        self.V = V if V is not None else nn.Parameter(xavierInit(t.empty(args.latdim, args.latdim)))
     
     def forward(self, nodeEmbed):
         value = t.reshape(nodeEmbed @ self.V, [-1, args.att_head, args.latdim//args.att_head])
@@ -238,7 +234,7 @@ class HypergraphTransormer(nn.Module):
         self.hypergraphLayers = nn.Sequential(*[HypergraphTransformerLayer() for i in range(args.hgnn_layer)])
         self.Hyper = nn.Parameter(xavierInit(t.empty(args.hyperNum, args.latdim)))
         self.V = nn.Parameter(xavierInit(t.empty(args.latdim, args.latdim)))
-        self.prepareValue = prepareValue()
+        self.prepareValue = prepareValue(self.V)
 
     def forward(self, Embed0, Key):
         lats = [Embed0]
@@ -400,8 +396,6 @@ class SHT(nn.Module):
         
     def forward(self, adj):
         uEmbeds, iEmbeds = self.LightGCN(adj)
-        uEmbeds0 = uEmbeds + self.uEmbeds # residual connection
-        iEmbeds0 = iEmbeds + self.iEmbeds
         uKey = self.prepareKey1(uEmbeds0)
         iKey = self.prepareKey2(iEmbeds0)
         ulat, uHyper = self.HypergraphTransormer1(uEmbeds0, uKey)
