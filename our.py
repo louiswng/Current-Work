@@ -1,8 +1,8 @@
 from Params import args
 import os
-# os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+# os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # comment when nni
 from setproctitle import setproctitle
-setproctitle("louis-our")
+setproctitle("EXP@lou")
 import torch as t
 from torch.utils.tensorboard import SummaryWriter
 import random
@@ -16,6 +16,8 @@ import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 
 # writer = SummaryWriter(log_dir='runs')
+
+t.cuda.empty_cache()
 
 def setup_seed(seed=1024):
 	random.seed(seed)
@@ -119,11 +121,10 @@ class Recommender():
             usr1, usrP, usrN = usr1.long().to(device), usrP.long().to(device), usrN.long().to(device)
             edgeids1 = self.sampEdge(args.edgeSampRate, args.edgeNum)
             edgeids2 = self.sampEdge(args.edgeSampRate, args.edgeNum)
-            uuedgeids = self.sampEdge(args.edgeSampRate, args.uuEdgeNum)         
+            uuedgeids = self.sampEdge(args.uuedgeSampRate, args.uuEdgeNum)
             preLoss, uuPreLoss, sslLoss, salLoss = self.model.calcLosses(self.handler.torchAdj, self.handler.torchuAdj, 
                                                                         usr, itmP, itmN, edgeids1, edgeids2, self.handler.trnMat,
                                                                         usr1, usrP, usrN, uuedgeids, self.handler.uuMat)
-
             regLoss = 0
             for W in self.model.parameters():
                 regLoss += W.norm(2).square()

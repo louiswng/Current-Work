@@ -39,17 +39,18 @@ class Our(nn.Module):
         uu_lat, uu_Hyper = self.HypergraphTransormer3(uu_Embed0, uu_Key)
 
         return ui_uEmbed0, ui_iEmbed0, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper
-
+        
     def calcSSL(self, embeds1, embeds2, nodes):
         pckEmbeds1 = F.normalize(embeds1[nodes], 2)
         pckEmbeds2 = F.normalize(embeds2[nodes], 2)
-        nume = ((pckEmbeds1 * pckEmbeds2).sum(-1) / args.temp).exp() # same node
-        deno = (pckEmbeds1.mm(t.transpose(embeds2, 0, 1)) / args.temp).exp().sum(-1)
-        ssl = (-(nume / deno).log()).sum()
+        nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp)
+        deno = t.sum(t.exp(t.mm(pckEmbeds1, t.transpose(embeds2, 0, 1)) / args.temp), axis=-1)
+        ssl = t.sum(- t.log(nume / deno))
         return ssl
 
     def calcLosses(self, adj, uAdj, usr, itmP, itmN, edgeids1, edgeids2, trnMat, usr1, usrP, usrN, uuedgeids, uuMat):
         uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, uAdj)
+
         # preds on ui graph
         pckUlat = ui_ulat[usr]
         pckIlatP = ui_ilat[itmP]
@@ -67,7 +68,7 @@ class Our(nn.Module):
         predsN = (pcklat * pcklatN).sum(-1)
         scoreDiff = predsP - predsN
         uuPreLoss = args.mult * args.uuPre_reg * (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch
-        
+
         # labeled edge dropout SGL on ui graph
         # adj1 = self.SpAdjDropEdge(adj)
         # adj2 = self.SpAdjDropEdge(adj)
@@ -99,7 +100,6 @@ class Our(nn.Module):
         fstPreds = _uu_preds[:halfNum]
         scdPreds = _uu_preds[halfNum:]
         salLoss = args.sal_reg * (t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * (fstScores-scdScores))).sum()
-
         return preLoss, uuPreLoss, sslLoss, salLoss
 
     def predPairs(self, adj, uAdj, usr, itm):
@@ -179,7 +179,6 @@ class SGL(nn.Module):
         usrSet = t.unique(usr)
         itmSet = t.unique(t.concat([itmP, itmN]))
         sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
-
         return bprLoss, sslLoss
 
     def predPairs(self, adj, usr, itm):
@@ -192,7 +191,7 @@ class LightGCN2(nn.Module):
     def __init__(self, uEmbeds=None):
         super(LightGCN2, self).__init__()
         self.uEmbeds = uEmbeds if uEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
-        self.gnnLayers = nn.Sequential(*[GCNLayer() for i in range(args.gnn_layer)])
+        self.gnnLayers = nn.Sequential(*[GCNLayer() for i in range(args.uugnn_layer)])
     
     def forward(self, adj):
         ulats = [self.uEmbeds]
@@ -396,15 +395,15 @@ class SHT(nn.Module):
         
     def forward(self, adj):
         uEmbeds, iEmbeds = self.LightGCN(adj)
-        uKey = self.prepareKey1(uEmbeds0)
-        iKey = self.prepareKey2(iEmbeds0)
-        ulat, uHyper = self.HypergraphTransormer1(uEmbeds0, uKey)
-        ilat, iHyper = self.HypergraphTransormer2(iEmbeds0, iKey)
+        uKey = self.prepareKey1(uEmbeds)
+        iKey = self.prepareKey2(iEmbeds)
+        ulat, uHyper = self.HypergraphTransormer1(uEmbeds, uKey)
+        ilat, iHyper = self.HypergraphTransormer2(iEmbeds, iKey)
         
-        return uEmbeds0, iEmbeds0, ulat, ilat, uKey, iKey, uHyper, iHyper
+        return uEmbeds, iEmbeds, ulat, ilat, uKey, iKey, uHyper, iHyper
 
     def calcLosses(self, adj, usr, itmP, itmN, edgeids, trnMat):
-        uEmbeds0, iEmbeds0, ulat, ilat, uKey, iKey, uHyper, iHyper = self.forward(adj)
+        uEmbeds, iEmbeds, ulat, ilat, uKey, iKey, uHyper, iHyper = self.forward(adj)
 
         pckUlat = ulat[usr]
         pckIlatP = ilat[itmP]
@@ -421,7 +420,7 @@ class SHT(nn.Module):
         usrKey = uKey[usrs]
         itmKey = iKey[itms]
         scores = self.label(usrKey, itmKey, uHyper, iHyper)
-        _preds = (uEmbeds0[usrs]*iEmbeds0[itms]).sum(1)
+        _preds = (uEmbeds[usrs]*iEmbeds[itms]).sum(1)
 
         halfNum = scores.shape[0] // 2
         fstScores = scores[:halfNum]
