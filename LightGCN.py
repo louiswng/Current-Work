@@ -2,7 +2,7 @@ from Params import args
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 from setproctitle import setproctitle
-setproctitle("louis-lightgcn")
+setproctitle("LightGCN@lou")
 import torch as t
 from torch.utils.tensorboard import SummaryWriter
 import random

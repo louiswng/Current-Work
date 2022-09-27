@@ -1,8 +1,8 @@
 from Params import args
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # comment when nni
 from setproctitle import setproctitle
-setproctitle("louis-sht")
+setproctitle("SHT@lou")
 import torch as t
 from torch.utils.tensorboard import SummaryWriter
 import random
