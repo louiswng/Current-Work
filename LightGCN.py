@@ -79,7 +79,7 @@ class Recommender():
                 writer.add_scalar('NDCG/test', reses['NDCG'], ep)
                 log(self.makePrint('Test', ep, reses, tstFlag))
                 # self.saveHistory()
-            self.sche.step()
+            # self.sche.step()
             print()
         log('The best metric are %.4f, %.4f \n' % (bstMtc['HR'], bstMtc['NDCG']), save=True, oneline=True)
         self.saveHistory()
@@ -87,7 +87,7 @@ class Recommender():
     def preperaModel(self):
         self.model = LightGCN().to(device)
         self.opt = t.optim.Adam(self.model.parameters(), lr=args.lr)
-        self.sche = t.optim.lr_scheduler.ExponentialLR(self.opt, gamma=args.decay)
+        # self.sche = t.optim.lr_scheduler.ExponentialLR(self.opt, gamma=args.decay)
 
     def trainEpoch(self):
         trnLoader = self.handler.trnLoader
