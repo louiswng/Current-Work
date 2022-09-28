@@ -72,8 +72,8 @@ class Our(nn.Module):
         # labeled edge dropout SGL on ui graph
         # adj1 = self.SpAdjDropEdge(adj)
         # adj2 = self.SpAdjDropEdge(adj)
-        adj1 = self.SpAdjDropEdge2(trnMat, adj, edgeids1, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper) # update per batch
-        adj2 = self.SpAdjDropEdge2(trnMat, adj, edgeids2, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper)
+        adj1 = self.SpAdjDropEdge2(trnMat, adj, edgeids1, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper) # update per batch
+        adj2 = self.SpAdjDropEdge2(trnMat, adj, edgeids2, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper)
         ret = self.forward(adj1, uAdj)
         uEmbeds1, iEmbeds1 = ret[2:4] # global
         ret = self.forward(adj2, uAdj)
@@ -365,7 +365,7 @@ class SpAdjDropEdge2(nn.Module):
         self.label = LabelNetwork().to(device)
         self.keepRate = keepRate
 
-    def forward(self, trnMat, adj, edgeids, uEmbeds, iEmbeds, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper):
+    def forward(self, trnMat, adj, edgeids, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper):
         coo = trnMat.tocoo()
         usrs, itms = coo.row[edgeids], coo.col[edgeids]
         ui_uKey = t.reshape(t.permute(ui_uKey, dims=[1, 0, 2]), [-1, args.latdim])
