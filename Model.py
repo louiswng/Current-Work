@@ -49,7 +49,7 @@ class Our(nn.Module):
         return ssl
 
     def calcLosses(self, adj, uAdj, usr, itmP, itmN, edgeids1, edgeids2, trnMat, usr1, usrP, usrN, uuedgeids, uuMat):
-        uEmbeds, iEmbeds, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, uAdj)
+        _, _, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, uAdj)
 
         # preds on ui graph
         pckUlat = ui_ulat[usr]
@@ -58,7 +58,8 @@ class Our(nn.Module):
         predsP = (pckUlat * pckIlatP).sum(-1)
         predsN = (pckUlat * pckIlatN).sum(-1)
         scoreDiff = predsP - predsN
-        preLoss = (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch
+        # preLoss = (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch # hinge loss
+        preLoss = -(scoreDiff).sigmoid().log().sum() / args.batch # bprloss
 
         # preds on uu graph
         pcklat = uu_lat[usr1]
@@ -67,7 +68,8 @@ class Our(nn.Module):
         predsP = (pcklat * pcklatP).sum(-1)
         predsN = (pcklat * pcklatN).sum(-1)
         scoreDiff = predsP - predsN
-        uuPreLoss = args.mult * args.uuPre_reg * (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch
+        # uuPreLoss = args.uuPre_reg * (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch # hinge loss
+        uuPreLoss = args.uuPre_reg * -(scoreDiff).sigmoid().log().sum() / args.batch # bprloss
 
         # labeled edge dropout SGL on ui graph
         # adj1 = self.SpAdjDropEdge(adj)
@@ -88,10 +90,10 @@ class Our(nn.Module):
         uu_Key = t.reshape(t.permute(uu_Key, dims=[1, 0, 2]), [-1, args.latdim])
         usrKey1 = uu_Key[usrs1]
         usrKey2 = uu_Key[usrs2]
-        uu_Hyper = (uu_Hyper + ui_uHyper) / 2
+        Hyper = (uu_Hyper + ui_uHyper) / 2
         usrLat1 = ui_ulat[usrs1]
         usrLat2 = ui_ulat[usrs2]
-        uu_scores = self.label2(usrKey1, usrKey2, usrLat1, usrLat2, uu_Hyper)
+        uu_scores = self.label2(usrKey1, usrKey2, usrLat1, usrLat2, Hyper)
         _uu_preds = (uu_Embed0[usrs1]*uu_Embed0[usrs2]).sum(-1)
 
         halfNum = uu_scores.shape[0] // 2
