@@ -78,7 +78,7 @@ class Our(nn.Module):
         uEmbeds1, iEmbeds1 = ret[2:4] # global
         ret = self.forward(adj2, uAdj)
         uEmbeds2, iEmbeds2 = ret[2:4]
-        usrSet = t.unique(usr1)
+        usrSet = t.unique(usr)
         itmSet = t.unique(t.concat([itmP, itmN]))
         sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
 
