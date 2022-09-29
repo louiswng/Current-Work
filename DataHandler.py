@@ -78,20 +78,24 @@ class DataHandler():
 		self.trnMat = trnMat
 		self.uuMat = uuMat
 		trainData = np.hstack([trnMat.row.reshape(-1, 1), trnMat.col.reshape(-1, 1)]).tolist() # (u, v) list
+		uuData = np.hstack([uuMat.row.reshape(-1, 1), uuMat.col.reshape(-1, 1)]).tolist()
 
-		trnData = BPRData(trainData, trnMat, isTraining=True)
-		tstData = BPRData(testData, trnMat, isTraining=False)
+		trnData = BPRData(trainData, trnMat, uuData, uuMat, isTraining=True)
+		tstData = BPRData(testData, trnMat, uuData, uuMat, isTraining=False)
 		self.trnLoader = DataLoader(trnData, batch_size=args.batch, shuffle=True, num_workers=0, pin_memory=True)
 		self.tstLoader = DataLoader(tstData, batch_size=args.test_batch*1000, shuffle=False, num_workers=0, pin_memory=True)
 
 class BPRData(Dataset):
-	def __init__(self, data, coomat, negNum=None, isTraining=None):
+	def __init__(self, data, coomat, uuData, uumat, negNum=None, isTraining=None):
 		super(BPRData, self).__init__()
 		self.data = data
+		self.uuData = uuData
 		self.dokmat = coomat.todok()
+		self.uuDokmat = uumat.todok()
 		self.negNum = negNum
 		self.isTraining = isTraining
 		self.negs = np.zeros(len(self.data)).astype(np.int32)
+		self.uuNegs = np.zeros(len(self.uuData)).astype(np.int32)
 		
 	def negSampling(self):
 		assert self.isTraining, 'No need to sample when testing'
@@ -102,12 +106,20 @@ class BPRData(Dataset):
 				if (u, iNeg) not in self.dokmat:
 					break
 			self.negs[i] = iNeg
+
+		for i in range(len(self.uuData)):
+			u = self.uuData[i][0]
+			while True:
+				uNeg = np.random.randint(args.user)
+				if (u, uNeg) not in self.uuDokmat:
+					break
+			self.uuNegs[i] = uNeg
 		
 	def __len__(self):
 		return len(self.data)
 
 	def __getitem__(self, idx):
 		if self.isTraining: # # usr: pos: neg = 1: 1: 1
-			return self.data[idx][0], self.data[idx][1], self.negs[idx]
+			return self.data[idx][0], self.data[idx][1], self.negs[idx]#, self.uuData[idx][0], self.uuData[idx][1], self.uuNegs[idx]
 		else:
 			return self.data[idx][0], self.data[idx][1]
