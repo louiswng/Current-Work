@@ -56,23 +56,20 @@ class Our(nn.Module):
         scoreDiff = predsP - predsN
         uuPreLoss = args.uuPre_reg * -(scoreDiff).sigmoid().log().sum() / args.batch # bprloss
 
-        usrEmbed1 = ui_uEmbed0[usr1]
-        usrEmbed2 = ui_uEmbed0[usr2]
-        temLat1 = ui_uEmbed0.mean(0)
-        temLat2 = self.leakyrelu(self.dropout(self.linear(temLat1))) + temLat1
-        graphUsrEmbed = self.leakyrelu(self.dropout(self.linear(temLat2))) + temLat2
-        scores = self.label(usrEmbed1, usrEmbed2, graphUsrEmbed)
-        _preds = (uu_Embed0[usr1]*uu_Embed0[usr1]).sum(-1)
+        # denoise
+        scores = self.label(ui_uEmbed0[usr1], ui_uEmbed0[usr2])
+        _preds = (uu_Embed0[usr1] * uu_Embed0[usr1]).sum(-1)
         salLoss = args.sal_reg * (t.maximum(t.tensor(0.0), 1.0-scores*_preds)).sum()
 
-        # adj1 = self.SpAdjDropEdge(adj)
-        # adj2 = self.SpAdjDropEdge(adj)
-        # uEmbeds1, iEmbeds1, _ = self.forward(adj1, uAdj)
-        # uEmbeds2, iEmbeds2, _ = self.forward(adj2, uAdj)
-        # usrSet = t.unique(usr)
-        # itmSet = t.unique(t.concat([itmP, itmN]))
-        # sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
-        sslLoss = t.tensor(0.0)
+        # contrastive learning
+        adj1 = self.SpAdjDropEdge(adj)
+        adj2 = self.SpAdjDropEdge(adj)
+        uEmbeds1, iEmbeds1, _ = self.forward(adj1, uAdj)
+        uEmbeds2, iEmbeds2, _ = self.forward(adj2, uAdj)
+        usrSet = t.unique(usr)
+        itmSet = t.unique(t.concat([itmP, itmN]))
+        sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
+        # sslLoss = t.tensor(0.0)
 
         return preLoss, uuPreLoss, salLoss, sslLoss
 
@@ -377,20 +374,17 @@ class Meta3(nn.Module):
 class LabelNetwork3(nn.Module):
     def __init__(self):
         super(LabelNetwork3, self).__init__()
-        self.meta = Meta3()
         self.linear1 = nn.Linear(2*args.latdim, args.latdim, bias=True)
         self.linear2 = nn.Linear(args.latdim, 1, bias=True)
-        self.bn1 = nn.BatchNorm1d(args.latdim)
-        self.bn2 = nn.BatchNorm1d(1)
+        self.dropout = nn.Dropout(args.dropRate)
         self.leakyrelu = nn.LeakyReLU(args.leaky)
         self.sigmoid = nn.Sigmoid()
-    def forward(self, usrLat1, usrLat2, graph):
-        Mapping = self.meta(graph)
-        lat1 = Mapping(usrLat1)
-        lat2 = Mapping(usrLat2)
-        lat = t.cat((lat1, lat2), dim=-1)
-        lat = self.leakyrelu(self.bn1(self.linear1(lat))) + lat1 + lat2
-        ret = t.reshape(self.sigmoid(self.bn2(self.linear2(lat))), [-1])
+        self.softmax = nn.Softmax(dim=-1)
+    def forward(self, lat1, lat2):
+        # lat = t.cat((lat1, lat2), dim=-1)
+        # lat = self.leakyrelu(self.dropout(self.linear1(lat))) + lat1 + lat2
+        # ret = t.reshape(self.sigmoid(self.dropout(self.linear2(lat))), [-1])
+        ret = (lat1 * lat2).sum(-1)
         return ret
 
 class SpAdjDropEdge(nn.Module):
