@@ -1,6 +1,6 @@
 from Params import args
 import os
-# os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # comment when nni
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu # comment when nni
 from setproctitle import setproctitle
 setproctitle("EXP@lou")
 import torch as t
@@ -15,9 +15,7 @@ from Model import Our
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
 
-# writer = SummaryWriter(log_dir='runs')
-
-t.cuda.empty_cache()
+writer = SummaryWriter(log_dir='runs')
 
 def setup_seed(seed=1024):
 	random.seed(seed)
@@ -68,7 +66,7 @@ class Recommender():
         for ep in range(stloc, args.epoch):
             tstFlag = (ep % args.tstEpoch == 0)
             reses = self.trainEpoch()
-            # writer.add_scalar('Loss/train', reses['Loss'], ep)
+            writer.add_scalar('Loss/train', reses['Loss'], ep)
             log(self.makePrint('Train', ep, reses, tstFlag))
             if tstFlag:
                 reses = self.testEpoch()
@@ -80,14 +78,14 @@ class Recommender():
                     if es >= args.patience:
                         log('Early stop')
                         break
-                # writer.add_scalar('HR/test', reses['HR'], ep)
-                # writer.add_scalar('NDCG/test', reses['NDCG'], ep)
-                nni.report_intermediate_result(reses['HR'])
+                writer.add_scalar('HR/test', reses['HR'], ep)
+                writer.add_scalar('NDCG/test', reses['NDCG'], ep)
+                # nni.report_intermediate_result(reses['HR'])
                 log(self.makePrint('Test', ep, reses, tstFlag))
                 # self.saveHistory()
             self.sche.step()
             print()
-        nni.report_final_result(bstMtc['HR'])
+        # nni.report_final_result(bstMtc['HR'])
         log('The best metric are %.4f, %.4f \n' % (bstMtc['HR'], bstMtc['NDCG']), save=True, oneline=True)
         self.saveHistory()
 
@@ -98,10 +96,12 @@ class Recommender():
 
     def sampSocialGraph(self, uuMat): # 随机选出 batch 个 usr, usrP, usrN
         batIdx = t.randint(high=len(uuMat.data), size=(args.batch,))
-        usr = t.from_numpy(uuMat.row[batIdx])
+        usr0 = t.from_numpy(uuMat.row[batIdx])
         usrP = t.from_numpy(uuMat.col[batIdx])
         usrN = t.from_numpy(self.handler.trnLoader.dataset.uuNegs[batIdx])
-        return usr, usrP, usrN
+        usr1 = t.randint(high=args.user, size=(args.sBatch,))
+        usr2 = t.randint(high=args.user, size=(args.sBatch,))
+        return usr0, usrP, usrN, usr1, usr2
 
     def sampEdge(self, edgeSampRate, edgeNum):
         edgeSampNum = int(edgeSampRate * edgeNum)
@@ -112,30 +112,27 @@ class Recommender():
     def trainEpoch(self):
         trnLoader = self.handler.trnLoader
         trnLoader.dataset.negSampling()
-        epLoss, epPreLoss, epuuPreLoss, epsslLoss, epsalLoss = [0] * 5
+        epLoss, epPreLoss, epuuPreLoss, epsalLoss, epsslLoss = [0] * 5
         steps = len(trnLoader.dataset) // args.batch
         self.model.train()
         for i, (usr, itmP, itmN) in enumerate(trnLoader):
             usr, itmP, itmN = usr.long().to(device), itmP.long().to(device), itmN.long().to(device)
-            usr1, usrP, usrN = self.sampSocialGraph(self.handler.uuMat)
-            usr1, usrP, usrN = usr1.long().to(device), usrP.long().to(device), usrN.long().to(device)
-            edgeids1 = self.sampEdge(args.edgeSampRate, args.edgeNum)
-            edgeids2 = self.sampEdge(args.edgeSampRate, args.edgeNum)
-            uuedgeids = self.sampEdge(args.uuedgeSampRate, args.uuEdgeNum)
-            preLoss, uuPreLoss, sslLoss, salLoss = self.model.calcLosses(self.handler.torchAdj, self.handler.torchuAdj, 
-                                                                        usr, itmP, itmN, edgeids1, edgeids2, self.handler.trnMat,
-                                                                        usr1, usrP, usrN, uuedgeids, self.handler.uuMat)
+            usr0, usrP, usrN, usr1, usr2 = self.sampSocialGraph(self.handler.uuMat)
+            usr0, usrP, usrN = usr0.long().to(device), usrP.long().to(device), usrN.long().to(device)
+            usr1, usr2 = usr1.long().to(device), usr2.long().to(device)
+            preLoss, uuPreLoss, salLoss, sslLoss = self.model.calcLosses(self.handler.torchAdj, usr, itmP, itmN, self.handler.torchuAdj, usr0, usrP, usrN, usr1, usr2)
+
             regLoss = 0
             for W in self.model.parameters():
                 regLoss += W.norm(2).square()
             regLoss *= args.reg
 
-            loss = preLoss + uuPreLoss + sslLoss + salLoss + regLoss
+            loss = preLoss + uuPreLoss + salLoss + sslLoss + regLoss
             epLoss += loss.item()
             epPreLoss += preLoss.item()
             epuuPreLoss += uuPreLoss.item()
-            epsslLoss += sslLoss.item()
             epsalLoss += salLoss.item()
+            epsslLoss += sslLoss.item()
 
             self.opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -145,8 +142,8 @@ class Recommender():
         ret['Loss'] = epLoss / steps
         ret['preLoss'] = epPreLoss / steps
         ret['uuPreLoss'] = epuuPreLoss / steps
-        ret['sslLoss'] = epsslLoss / steps
         ret['salLoss'] = epsalLoss / steps
+        ret['sslLoss'] = epsslLoss / steps
         return ret
 
     def testEpoch(self):
@@ -160,7 +157,7 @@ class Recommender():
             for i, (usr, itm) in enumerate(tstLoader):
                 usr, itm = usr.long().to(device), itm.long().to(device)
                 batch = usr.shape[0] / 100
-                preds = self.model.predPairs(self.handler.torchAdj, self.handler.torchuAdj, usr, itm)
+                preds = self.model.predPairs(self.handler.torchAdj, usr, itm, self.handler.torchuAdj)
                 hr, ndcg = self.calcRes(preds, itm)
                 epHr += hr
                 epNdcg += ndcg
@@ -218,9 +215,9 @@ if __name__=="__main__":
     logger.saveDefault = True
 
     # get parameters form tuner
-    tuner_params = nni.get_next_parameter()
-    params = vars(merge_parameter(args, tuner_params))
-    print(params)
+    # tuner_params = nni.get_next_parameter()
+    # params = vars(merge_parameter(args, tuner_params))
+    # print(params)
 
     log('Start')
     handler = DataHandler()

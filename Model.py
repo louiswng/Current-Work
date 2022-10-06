@@ -16,97 +16,69 @@ class Our(nn.Module):
         self.iEmbeds0 = nn.Parameter(xavierInit(t.empty(args.item, args.latdim)))
         self.LightGCN = LightGCN(self.uEmbeds0, self.iEmbeds0).to(device)
         self.LightGCN2 = LightGCN2(self.uEmbeds0).to(device)
-        self.prepareKey1 = prepareKey().to(device)
-        self.prepareKey2 = prepareKey().to(device)
-        self.prepareKey3 = prepareKey().to(device)
-        self.HypergraphTransormer1 = HypergraphTransormer().to(device)
-        self.HypergraphTransormer2 = HypergraphTransormer().to(device)
-        self.HypergraphTransormer3 = HypergraphTransormer().to(device)
-        # self.label = LabelNetwork().to(device)
-        self.label2 = LabelNetwork2().to(device)
+        self.label = LabelNetwork3().to(device)
+        self.linear = nn.Linear(args.latdim, args.latdim)
+        self.dropout = nn.Dropout(args.dropRate)
+        self.leakyrelu = nn.LeakyReLU(args.leaky)
         self.SpAdjDropEdge = SpAdjDropEdge(args.keepRate).to(device)
-        self.SpAdjDropEdge2 = SpAdjDropEdge2(args.keepRate).to(device)
-        
+
     def forward(self, adj, uAdj):
         ui_uEmbed0, ui_iEmbed0 = self.LightGCN(adj) # (usr, d)
         uu_Embed0 = self.LightGCN2(uAdj)
+        return ui_uEmbed0, ui_iEmbed0, uu_Embed0
 
-        ui_uKey = self.prepareKey1(ui_uEmbed0)
-        ui_iKey = self.prepareKey2(ui_iEmbed0)
-        uu_Key = self.prepareKey3(uu_Embed0)
-        ui_ulat, ui_uHyper = self.HypergraphTransormer1(ui_uEmbed0, ui_uKey)
-        ui_ilat, ui_iHyper = self.HypergraphTransormer2(ui_iEmbed0, ui_iKey)
-        uu_lat, uu_Hyper = self.HypergraphTransormer3(uu_Embed0, uu_Key)
-
-        return ui_uEmbed0, ui_iEmbed0, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper
-        
     def calcSSL(self, embeds1, embeds2, nodes):
         pckEmbeds1 = F.normalize(embeds1[nodes], 2)
         pckEmbeds2 = F.normalize(embeds2[nodes], 2)
-        nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp)
+        nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp) # same node
         deno = t.sum(t.exp(t.mm(pckEmbeds1, t.transpose(embeds2, 0, 1)) / args.temp), axis=-1)
         ssl = t.sum(- t.log(nume / deno))
         return ssl
 
-    def calcLosses(self, adj, uAdj, usr, itmP, itmN, edgeids1, edgeids2, trnMat, usr1, usrP, usrN, uuedgeids, uuMat):
-        _, _, ui_ulat, ui_ilat, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper, uu_Embed0, uu_lat, uu_Key, uu_Hyper = self.forward(adj, uAdj)
+    def calcLosses(self, adj, usr, itmP, itmN, uAdj, usr0, usrP, usrN, usr1, usr2):
+        ui_uEmbed0, ui_iEmbed0, uu_Embed0 = self.forward(adj, uAdj)
 
         # preds on ui graph
-        pckUlat = ui_ulat[usr]
-        pckIlatP = ui_ilat[itmP]
-        pckIlatN = ui_ilat[itmN]
+        pckUlat = ui_uEmbed0[usr]
+        pckIlatP = ui_iEmbed0[itmP]
+        pckIlatN = ui_iEmbed0[itmN]
         predsP = (pckUlat * pckIlatP).sum(-1)
         predsN = (pckUlat * pckIlatN).sum(-1)
         scoreDiff = predsP - predsN
-        # preLoss = (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch # hinge loss
         preLoss = -(scoreDiff).sigmoid().log().sum() / args.batch # bprloss
 
         # preds on uu graph
-        pcklat = uu_lat[usr1]
-        pcklatP = uu_lat[usrP]
-        pcklatN = uu_lat[usrN]
-        predsP = (pcklat * pcklatP).sum(-1)
-        predsN = (pcklat * pcklatN).sum(-1)
+        pckUlat = uu_Embed0[usr0]
+        pckUlatP = uu_Embed0[usrP]
+        pckUlatN = uu_Embed0[usrN]
+        predsP = (pckUlat * pckUlatP).sum(-1)
+        predsN = (pckUlat * pckUlatN).sum(-1)
         scoreDiff = predsP - predsN
-        # uuPreLoss = args.uuPre_reg * (t.maximum(t.tensor(0.0), 1.0 - scoreDiff)).sum() / args.batch # hinge loss
         uuPreLoss = args.uuPre_reg * -(scoreDiff).sigmoid().log().sum() / args.batch # bprloss
 
-        # labeled edge dropout SGL on ui graph
+        usrEmbed1 = ui_uEmbed0[usr1]
+        usrEmbed2 = ui_uEmbed0[usr2]
+        temLat1 = ui_uEmbed0.mean(0)
+        temLat2 = self.leakyrelu(self.dropout(self.linear(temLat1))) + temLat1
+        graphUsrEmbed = self.leakyrelu(self.dropout(self.linear(temLat2))) + temLat2
+        scores = self.label(usrEmbed1, usrEmbed2, graphUsrEmbed)
+        _preds = (uu_Embed0[usr1]*uu_Embed0[usr1]).sum(-1)
+        salLoss = args.sal_reg * (t.maximum(t.tensor(0.0), 1.0-scores*_preds)).sum()
+
         # adj1 = self.SpAdjDropEdge(adj)
         # adj2 = self.SpAdjDropEdge(adj)
-        adj1 = self.SpAdjDropEdge2(trnMat, adj, edgeids1, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper) # update per batch
-        adj2 = self.SpAdjDropEdge2(trnMat, adj, edgeids2, ui_uKey, ui_iKey, ui_uHyper, ui_iHyper)
-        ret = self.forward(adj1, uAdj)
-        uEmbeds1, iEmbeds1 = ret[2:4] # global
-        ret = self.forward(adj2, uAdj)
-        uEmbeds2, iEmbeds2 = ret[2:4]
-        usrSet = t.unique(usr)
-        itmSet = t.unique(t.concat([itmP, itmN]))
-        sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
+        # uEmbeds1, iEmbeds1, _ = self.forward(adj1, uAdj)
+        # uEmbeds2, iEmbeds2, _ = self.forward(adj2, uAdj)
+        # usrSet = t.unique(usr)
+        # itmSet = t.unique(t.concat([itmP, itmN]))
+        # sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
+        sslLoss = t.tensor(0.0)
 
-        # self-augumented learning on uu graph
-        coo = uuMat.tocoo()
-        usrs1, usrs2 = coo.row[uuedgeids], coo.col[uuedgeids]
-        uu_Key = t.reshape(t.permute(uu_Key, dims=[1, 0, 2]), [-1, args.latdim])
-        usrKey1 = uu_Key[usrs1]
-        usrKey2 = uu_Key[usrs2]
-        Hyper = (uu_Hyper + ui_uHyper) / 2
-        usrLat1 = ui_ulat[usrs1]
-        usrLat2 = ui_ulat[usrs2]
-        uu_scores = self.label2(usrKey1, usrKey2, usrLat1, usrLat2, Hyper)
-        _uu_preds = (uu_Embed0[usrs1]*uu_Embed0[usrs2]).sum(-1)
+        return preLoss, uuPreLoss, salLoss, sslLoss
 
-        halfNum = uu_scores.shape[0] // 2
-        fstScores = uu_scores[:halfNum]
-        scdScores = uu_scores[halfNum:]
-        fstPreds = _uu_preds[:halfNum]
-        scdPreds = _uu_preds[halfNum:]
-        salLoss = args.sal_reg * (t.maximum(t.tensor(0.0), 1.0 - (fstPreds - scdPreds) * (fstScores-scdScores))).sum()
-        return preLoss, uuPreLoss, sslLoss, salLoss
-
-    def predPairs(self, adj, uAdj, usr, itm):
+    def predPairs(self, adj, usr, itm, uAdj):
         ret = self.forward(adj, uAdj)
-        uEmbeds, iEmbeds = ret[2:4] # global embeds
+        uEmbeds, iEmbeds = ret[:2]
         uEmbed = uEmbeds[usr]
         iEmbed = iEmbeds[itm]
         return (uEmbed * iEmbed).sum(-1)
@@ -269,6 +241,46 @@ class HypergraphTransformerLayer(nn.Module):
         lats.append(newLat)
         return lats
 
+class HypergraphTransormer1(nn.Module):
+    def __init__(self):
+        super(HypergraphTransormer1, self).__init__()
+        self.hypergraphLayers = nn.Sequential(*[HypergraphTransformerLayer1() for i in range(args.hgnn_layer)])
+        self.Hyper = nn.Parameter(xavierInit(t.empty(args.hyperNum, args.latdim)))
+        self.K = nn.Parameter(xavierInit(t.empty(args.latdim, args.latdim)))
+        self.V = nn.Parameter(xavierInit(t.empty(args.latdim, args.latdim)))
+
+    def forward(self, Embed0):
+        lats = [Embed0]
+        for hypergraph in self.hypergraphLayers:
+            lat = hypergraph(lats[-1], self.K, self.V, self.Hyper)
+            lats.append(lat)
+        return sum(lats), self.Hyper
+
+class HypergraphTransformerLayer1(nn.Module):
+    def __init__(self):
+        super(HypergraphTransformerLayer1, self).__init__()
+        self.multihead_attn = nn.MultiheadAttention(args.latdim, num_heads=args.att_head, dropout=args.dropRate)
+        self.linear1 = nn.Linear(args.hyperNum, args.hyperNum)
+        self.linear2 = nn.Linear(args.hyperNum, args.hyperNum)
+        self.dropout = nn.Dropout(args.dropRate)
+        self.leakyrelu = nn.LeakyReLU(args.leaky)
+
+    def forward(self, nodeEmbeds, K, V, hyper):
+        query = hyper # (k, d)
+        key = nodeEmbeds @ K # (n, d)
+        value = nodeEmbeds @ V
+        hyper, _ = self.multihead_attn(query, key, value) # (k, d)
+        # hyper = 0.0001 * hyper
+        temlat1 = t.t(hyper)
+        temlat2 = self.leakyrelu(self.dropout(self.linear1(temlat1))) + temlat1
+        temlat3 = self.leakyrelu(self.dropout(self.linear2(temlat2))) + temlat2
+        hyper = t.t(temlat3)
+        query = key # (n, d)
+        key = hyper
+        value = hyper @ V
+        lats, _ = self.multihead_attn(query, key, value) # (n, d)
+        return lats
+
 class Meta(nn.Module):
     def __init__(self):
         super(Meta, self).__init__()
@@ -342,6 +354,40 @@ class LabelNetwork2(nn.Module):
         Mapping = self.meta(Hyper)
         lat1 = Mapping(Key1, Lat1)
         lat2 = Mapping(Key2, Lat2)
+        lat = t.cat((lat1, lat2), dim=-1)
+        lat = self.leakyrelu(self.bn1(self.linear1(lat))) + lat1 + lat2
+        ret = t.reshape(self.sigmoid(self.bn2(self.linear2(lat))), [-1])
+        return ret
+
+class Meta3(nn.Module):
+    def __init__(self):
+        super(Meta3, self).__init__()
+        self.linear1 = nn.Linear(args.latdim, args.latdim * args.latdim, bias=True)
+        self.linear2 = nn.Linear(args.latdim, args.latdim, bias=True)
+        self.dropout = nn.Dropout(args.dropRate)
+        self.leakyrelu = nn.LeakyReLU(args.leaky)
+    def forward(self, graphEmbed):
+        W1 = t.reshape(self.dropout(self.linear1(graphEmbed)), [args.latdim, args.latdim])
+        b1 = self.dropout(self.linear2(graphEmbed))
+        def mapping(lat):
+            ret = self.leakyrelu(lat @ W1 + b1)
+            return ret
+        return mapping
+
+class LabelNetwork3(nn.Module):
+    def __init__(self):
+        super(LabelNetwork3, self).__init__()
+        self.meta = Meta3()
+        self.linear1 = nn.Linear(2*args.latdim, args.latdim, bias=True)
+        self.linear2 = nn.Linear(args.latdim, 1, bias=True)
+        self.bn1 = nn.BatchNorm1d(args.latdim)
+        self.bn2 = nn.BatchNorm1d(1)
+        self.leakyrelu = nn.LeakyReLU(args.leaky)
+        self.sigmoid = nn.Sigmoid()
+    def forward(self, usrLat1, usrLat2, graph):
+        Mapping = self.meta(graph)
+        lat1 = Mapping(usrLat1)
+        lat2 = Mapping(usrLat2)
         lat = t.cat((lat1, lat2), dim=-1)
         lat = self.leakyrelu(self.bn1(self.linear1(lat))) + lat1 + lat2
         ret = t.reshape(self.sigmoid(self.bn2(self.linear2(lat))), [-1])
