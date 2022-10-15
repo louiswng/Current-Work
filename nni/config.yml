@@ -1,17 +1,18 @@
-experimentName: SHT
+experimentName: our
 searchSpaceFile: search_space.json
-trialCommand: python3 our.py --data yelp --mult 1e2 --edgeSampRate 0.1 --epoch 150 --save_path yelp_repeat --reg 1e-2 --lambda_u 1e-1
+trialCommand: python3 our.py --data ciao --save_name ciao_our --epoch 150
 trialCodeDirectory: ../
-trialConcurrency: 2
+trialConcurrency: 1
 trialGpuNumber: 1
-tunerGpuIndices: "1"
+tunerGpuIndices: "0"
 tuner:
-  name: TPE
-  classArgs:
-    optimize_mode: maximize
+  name: GridSearch
+  # classArgs:
+  #   optimize_mode: maximize
+  #   seed: 1024
 # assessor: Medianstop
 trainingService: 
   platform: local
   useActiveGpu: true
   maxTrialNumberPerGpu: 4
-  gpuIndices: "1"
+  gpuIndices: "0"

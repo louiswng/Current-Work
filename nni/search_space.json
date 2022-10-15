@@ -1,3 +1,12 @@
 {
-    "lambda_u": {"_type": "choice", "_value": [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]}
+    "ssl_reg": {"_type": "choice", "_value": [1e-5]},
+    "sal_reg": {"_type": "choice", "_value": [1e-5]},
+    "uugnn_layer": {"_type": "choice", "_value": [2]},
+    "uuPre_reg": {"_type": "choice", "_value": [1e-2]},
+    "sBatch": {"_type": "choice", "_value": [4096]},
+    "gnn_layer": {"_type": "choice", "_value": [4]},
+    "reg": {"_type": "choice", "_value": [1e-5]},
+    "latdim": {"_type": "choice", "_value": [128]},
+    "batch": {"_type": "choice", "_value": [2048]},
+    "lr": {"_type": "choice", "_value": [1e-3]}
 }
