@@ -1,5 +1,4 @@
 from Params import args
-from Utils.tools import check_symmetric
 import os
 from random import shuffle
 import pandas as pd
