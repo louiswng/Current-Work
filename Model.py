@@ -136,11 +136,14 @@ class Our(nn.Module):
         return (uEmbed * iEmbed).sum(-1)
 
 class LightGCN(nn.Module):
-    def __init__(self, uEmbeds=None, iEmbeds=None, pool='sum'):
+    def __init__(self, uEmbeds=None, iEmbeds=None, node_dropout=False, msg_dropout=True, pool='sum'):
         super(LightGCN, self).__init__()
         self.uEmbeds = uEmbeds if uEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
         self.iEmbeds = iEmbeds if iEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.item, args.latdim)))
         self.gcnLayers = nn.Sequential(*[GCNLayer() for i in range(args.gnn_layer)])
+        self.node_dropout = node_dropout
+        self.msg_dropout = msg_dropout
+        self.dropout = nn.Dropout(p=args.dropRate)
         self.pool = pool
 
     def pooling(self, embeds):
@@ -150,7 +153,7 @@ class LightGCN(nn.Module):
             return embeds.sum(0)
         elif self.pool == 'concat':
             return embeds.view(embeds.shape[1], -1)
-        else:
+        else: # final
             return embeds[-1]
 
     def forward(self, adj):
@@ -158,6 +161,8 @@ class LightGCN(nn.Module):
         embedLst = [embeds]
         for gcn in self.gcnLayers:
             embeds = gcn(adj, embedLst[-1])
+            if self.msg_dropout:
+                embeds = self.dropout(embeds)
             embedLst.append(embeds)
         embeds = t.stack(embedLst, dim=0)
         embeds = self.pooling(embeds)
