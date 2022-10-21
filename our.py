@@ -14,6 +14,7 @@ from DataHandler import DataHandler
 from Model import Our
 import Utils.TimeLogger as logger
 from Utils.TimeLogger import log
+from Utils.utils import early_stopping
 
 writer = SummaryWriter(log_dir='runs')
 
@@ -62,7 +63,9 @@ class Recommender():
         else:
             stloc = 0
             log('Model Initialized')
-        bstMtc = {'HR': 0.0, 'NDCG': 0.0}
+        bst_val = {'HR': 0.0, 'NDCG': 0.0}
+        es = 0
+        should_stop = False
         for ep in range(stloc, args.epoch):
             tstFlag = (ep % args.tstEpoch == 0)
             reses = self.trainEpoch()
@@ -70,14 +73,11 @@ class Recommender():
             log(self.makePrint('Train', ep, reses, tstFlag))
             if tstFlag:
                 reses = self.testEpoch()
-                if reses['HR'] > bstMtc['HR']:
-                    bstMtc = reses
-                    es = 0
-                else:
-                    es += 1
-                    if es >= args.patience:
-                        log('Early stop')
-                        break
+                bst_val, es, should_stop = early_stopping(reses, bst_val,
+                                                          es, expected_order='HR',
+                                                          patience=args.patience)
+                if should_stop:
+                    break
                 writer.add_scalar('HR/test', reses['HR'], ep)
                 writer.add_scalar('NDCG/test', reses['NDCG'], ep)
                 # nni.report_intermediate_result(reses['HR'])
@@ -85,8 +85,8 @@ class Recommender():
                 # self.saveHistory()
             self.sche.step()
             print()
-        # nni.report_final_result(bstMtc['HR'])
-        log('The best metric are %.4f, %.4f \n' % (bstMtc['HR'], bstMtc['NDCG']), save=True, oneline=True)
+        # nni.report_final_result(bst_val['HR'])
+        log('Early stopping at %d, HR %.4f, NDCG %.4f \n' % (ep, bst_val['HR'], bst_val['NDCG']), save=True, oneline=True)
         self.saveHistory()
 
     def preperaModel(self):
