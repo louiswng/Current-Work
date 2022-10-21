@@ -1,5 +1,5 @@
 import torch as t
-t.set_printoptions(profile="full")
+# t.set_printoptions(profile="full")
 from torch import nn
 import torch.nn.functional as F
 from Params import args
@@ -30,14 +30,27 @@ class Our(nn.Module):
         return ui_uEmbed0, ui_iEmbed0, uu_Embed0
 
     def calcSSL(self, embeds1, embeds2, nodes):
-        pckEmbeds1 = F.normalize(embeds1[nodes], 2)
-        pckEmbeds2 = F.normalize(embeds2[nodes], 2)
+        # pckEmbeds1 = F.normalize(embeds1[nodes], 2)
+        # pckEmbeds2 = F.normalize(embeds2[nodes], 2)
+        pckEmbeds1 = embeds1[nodes]
+        pckEmbeds2 = embeds2[nodes]
         nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp) # same node
-        deno = t.sum(t.exp(t.mm(pckEmbeds1, t.transpose(embeds2, 0, 1)) / args.temp), axis=-1)
+        deno = t.sum(t.exp(t.mm(pckEmbeds1, t.transpose(pckEmbeds2, 0, 1)) / args.temp), axis=-1) # select neg node (low solidity) 
         ssl = t.sum(- t.log(nume / deno))
         return ssl
 
-    def randomEdgeDrop(self, adj):
+    def calcUSSL(self, embeds1, embeds2, nodes, mask):
+        # pckEmbeds1 = F.normalize(embeds1[nodes], 2)
+        # pckEmbeds2 = F.normalize(embeds2[nodes], 2)
+        pckEmbeds1 = embeds1[nodes]
+        pckEmbeds2 = embeds2[nodes]
+        nume = t.exp(t.sum(pckEmbeds1 * pckEmbeds2, axis=-1) / args.temp) # same node
+        negs = t.mm(pckEmbeds1, t.transpose(pckEmbeds2, 0, 1))[mask] # select negtive nodes (low solidity) 
+        deno = t.sum(t.exp(negs / args.temp), axis=-1)
+        ssl = t.sum(- t.log(nume / deno))
+        return ssl
+
+    def randEdgeDrop(self, adj):
         vals = adj._values()
         idxs = adj._indices()
         edgeNum = vals.size()
@@ -66,22 +79,29 @@ class Our(nn.Module):
         ret = t.reshape(self.sigmoid(self.dropout(self.linear2(lat))), [-1])
         return ret
 
+    def selNegSamp(self, uEmbeds, usr):
+        uEmbed = uEmbeds[usr]
+        score = uEmbed @ t.t(uEmbed)
+        zeros = t.zeros_like(score)
+        mask = t.where(score<0.0, zeros, score).type(t.bool) # score <= 0 is False
+        return mask
+
     def calcLosses(self, adj, usr, itmP, itmN, uAdj, usr0, usrP, usrN, usr1, usr2, trnMat, edgeids1, edgeids2):
-        ui_uEmbed0, ui_iEmbed0, uu_Embed0 = self.forward(adj, uAdj)
+        ui_uEmbed, ui_iEmbed, uu_Embed = self.forward(adj, uAdj)
         
         # preds on ui graph
-        pckUlat = ui_uEmbed0[usr]
-        pckIlatP = ui_iEmbed0[itmP]
-        pckIlatN = ui_iEmbed0[itmN]
+        pckUlat = ui_uEmbed[usr]
+        pckIlatP = ui_iEmbed[itmP]
+        pckIlatN = ui_iEmbed[itmN]
         predsP = (pckUlat * pckIlatP).sum(-1)
         predsN = (pckUlat * pckIlatN).sum(-1)
         scoreDiff = predsP - predsN
         preLoss = -(scoreDiff).sigmoid().log().sum() / args.batch # bprloss
 
         # preds on uu graph
-        pckUlat = uu_Embed0[usr0]
-        pckUlatP = uu_Embed0[usrP]
-        pckUlatN = uu_Embed0[usrN]
+        pckUlat = uu_Embed[usr0]
+        pckUlatP = uu_Embed[usrP]
+        pckUlatN = uu_Embed[usrN]
         predsP = (pckUlat * pckUlatP).sum(-1)
         predsN = (pckUlat * pckUlatN).sum(-1)
         scoreDiff = predsP - predsN
@@ -89,21 +109,22 @@ class Our(nn.Module):
         # uuPreLoss = t.tensor(0.0)
 
         # denoise
-        scores = self.label(ui_uEmbed0[usr1], ui_uEmbed0[usr2])
-        _preds = (uu_Embed0[usr1] * uu_Embed0[usr2]).sum(-1)
+        scores = self.label(ui_uEmbed[usr1], ui_uEmbed[usr2])
+        _preds = (uu_Embed[usr1] * uu_Embed[usr2]).sum(-1)
         salLoss = args.sal_reg * (t.maximum(t.tensor(0.0), 1.0-scores*_preds)).sum()
         # salLoss = t.tensor(0.0)
  
-        # adj1 = self.randomEdgeDrop(adj)
-        # adj2 = self.randomEdgeDrop(adj)
-        # adj1 = self.labeledEdgeDrop(adj, trnMat, edgeids1, ui_uEmbed0, ui_iEmbed0)
-        # adj2 = self.labeledEdgeDrop(adj, trnMat, edgeids2, ui_uEmbed0, ui_iEmbed0)
-        # uEmbeds1, iEmbeds1, _ = self.forward(adj1, uAdj)
-        # uEmbeds2, iEmbeds2, _ = self.forward(adj2, uAdj)
-        # usrSet = t.unique(usr)
-        # itmSet = t.unique(t.concat([itmP, itmN]))
-        # sslLoss = args.ssl_reg * (self.calcSSL(uEmbeds1, uEmbeds2, usrSet) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
-        sslLoss = t.tensor(0.0)
+        # adj1 = self.randEdgeDrop(adj)
+        # adj2 = self.randEdgeDrop(adj)
+        adj1 = self.labeledEdgeDrop(adj, trnMat, edgeids1, ui_uEmbed, ui_iEmbed)
+        adj2 = self.labeledEdgeDrop(adj, trnMat, edgeids2, ui_uEmbed, ui_iEmbed)
+        uEmbeds1, iEmbeds1, _ = self.forward(adj1, uAdj)
+        uEmbeds2, iEmbeds2, _ = self.forward(adj2, uAdj)
+        usrSet = t.unique(usr)
+        itmSet = t.unique(t.concat([itmP, itmN]))
+        mask = self.selNegSamp(uu_Embed, usrSet)
+        sslLoss = args.ssl_reg * (self.calcUSSL(uEmbeds1, uEmbeds2, usrSet, mask) + self.calcSSL(iEmbeds1, iEmbeds2, itmSet))
+        # sslLoss = t.tensor(0.0)
         
         return preLoss, uuPreLoss, salLoss, sslLoss
 
@@ -115,11 +136,22 @@ class Our(nn.Module):
         return (uEmbed * iEmbed).sum(-1)
 
 class LightGCN(nn.Module):
-    def __init__(self, uEmbeds=None, iEmbeds=None):
+    def __init__(self, uEmbeds=None, iEmbeds=None, pool='sum'):
         super(LightGCN, self).__init__()
         self.uEmbeds = uEmbeds if uEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
         self.iEmbeds = iEmbeds if iEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.item, args.latdim)))
         self.gcnLayers = nn.Sequential(*[GCNLayer() for i in range(args.gnn_layer)])
+        self.pool = pool
+
+    def pooling(self, embeds):
+        if self.pool == 'mean':
+            return embeds.mean(0)
+        elif self.pool == 'sum':
+            return embeds.sum(0)
+        elif self.pool == 'concat':
+            return embeds.view(embeds.shape[1], -1)
+        else:
+            return embeds[-1]
 
     def forward(self, adj):
         embeds = t.concat([self.uEmbeds, self.iEmbeds], axis=0)
@@ -127,7 +159,8 @@ class LightGCN(nn.Module):
         for gcn in self.gcnLayers:
             embeds = gcn(adj, embedLst[-1])
             embedLst.append(embeds)
-        embeds = sum(embedLst)
+        embeds = t.stack(embedLst, dim=0)
+        embeds = self.pooling(embeds)
         return embeds[:args.user], embeds[args.user:]
 
 class LightGCN2(nn.Module):
