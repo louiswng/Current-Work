@@ -136,14 +136,11 @@ class Our(nn.Module):
         return (uEmbed * iEmbed).sum(-1)
 
 class LightGCN(nn.Module):
-    def __init__(self, uEmbeds=None, iEmbeds=None, node_dropout=False, msg_dropout=True, pool='sum'):
+    def __init__(self, uEmbeds=None, iEmbeds=None, edge_dropout=True, msg_dropout=False, pool='sum'):
         super(LightGCN, self).__init__()
         self.uEmbeds = uEmbeds if uEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.user, args.latdim)))
         self.iEmbeds = iEmbeds if iEmbeds is not None else nn.Parameter(xavierInit(t.empty(args.item, args.latdim)))
         self.gcnLayers = nn.Sequential(*[GCNLayer() for i in range(args.gnn_layer)])
-        self.node_dropout = node_dropout
-        self.msg_dropout = msg_dropout
-        self.dropout = nn.Dropout(p=args.dropRate)
         self.pool = pool
 
     def pooling(self, embeds):
@@ -161,8 +158,6 @@ class LightGCN(nn.Module):
         embedLst = [embeds]
         for gcn in self.gcnLayers:
             embeds = gcn(adj, embedLst[-1])
-            if self.msg_dropout:
-                embeds = self.dropout(embeds)
             embedLst.append(embeds)
         embeds = t.stack(embedLst, dim=0)
         embeds = self.pooling(embeds)
@@ -182,8 +177,28 @@ class LightGCN2(nn.Module):
         return sum(ulats)
 
 class GCNLayer(nn.Module):
-    def __init__(self):
+    def __init__(self, edge_dropout=False, msg_dropout=False):
         super(GCNLayer, self).__init__()
-    
+        self.edge_dropout = edge_dropout
+        self.edge_drop = args.edge_drop
+        self.msg_dropout = msg_dropout
+        self.msg_drop = args.msg_drop
+        self.dropout = nn.Dropout(p=args.dropRate)
+
+    def _sparse_dropout(self, adj, drop_rate):
+        keep_rate = 1-drop_rate
+        vals = adj._values()
+        idxs = adj._indices()
+        edgeNum = vals.size()
+        mask = ((t.rand(edgeNum) + keep_rate).floor()).type(t.bool)
+        newVals = vals[mask] / keep_rate
+        newIdxs = idxs[:, mask]
+        return t.sparse.FloatTensor(newIdxs, newVals, adj.shape)
+
     def forward(self, adj, embeds):
-        return t.spmm(adj, embeds)
+        if self.edge_dropout:
+            adj = self._sparse_dropout(adj, self.edge_drop)
+        embeds = t.spmm(adj, embeds)
+        if self.msg_dropout:
+            embeds = self.dropout(embeds)
+        return embeds

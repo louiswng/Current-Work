@@ -28,5 +28,7 @@ def parse_args():
     parser.add_argument('--temp', default=1.0, type=float, help='temperature in SSL')
     parser.add_argument('--keepRate', default=0.5, type=float, help='rate for edge dropout')
     parser.add_argument('--dropRate', default=0.5, type=float, help='rate for dropout layer')
+    parser.add_argument('--edge_drop', default=0.5, type=float, help='rate for dropout edge')
+    parser.add_argument('--msg_drop', default=0.5, type=float, help='rate for dropout message')
     return parser.parse_args()
 args = parse_args()
