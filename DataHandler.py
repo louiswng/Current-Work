@@ -16,11 +16,11 @@ device = "cuda" if t.cuda.is_available() else "cpu"
 
 class DataHandler():
 	def __init__(self):
-		if args.data == 'yelp':
+		if args.data == 'Yelp':
 			predir = 'Data/Yelp/'
-		elif args.data == 'ciao':
+		elif args.data == 'CiaoDVD':
 			predir = 'Data/CiaoDVD/'
-		elif args.data == 'epinions':
+		elif args.data == 'Epinions':
 			predir = 'Data/Epinions/'
 		self.predir = predir
 		self.trnfile = predir + 'train.csv'

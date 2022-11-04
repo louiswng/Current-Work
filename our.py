@@ -112,7 +112,7 @@ class Recommender():
     def trainEpoch(self):
         trnLoader = self.handler.trnLoader
         trnLoader.dataset.negSampling()
-        epLoss, epPreLoss, epuuPreLoss, epsalLoss, epsslLoss = [0] * 5
+        epLoss, epPreLoss, epuuPreLoss, epsalLoss = [0] * 4
         steps = len(trnLoader.dataset) // args.batch
         self.model.train()
         for i, (usr, itmP, itmN) in enumerate(trnLoader):
@@ -120,23 +120,19 @@ class Recommender():
             usr0, usrP, usrN, usr1, usr2 = self.sampSocialGraph(self.handler.uuMat)
             usr0, usrP, usrN = usr0.long().to(device), usrP.long().to(device), usrN.long().to(device)
             usr1, usr2 = usr1.long().to(device), usr2.long().to(device)
-            edgeids1 = self.sampEdge(args.edgeSampRate, args.edgeNum)
-            edgeids2 = self.sampEdge(args.edgeSampRate, args.edgeNum)
-            preLoss, uuPreLoss, salLoss, sslLoss = self.model.calcLosses(self.handler.torchAdj, usr, itmP, itmN,
-                                                                        self.handler.torchuAdj, usr0, usrP, usrN, usr1, usr2,
-                                                                        self.handler.trnMat, edgeids1, edgeids2)
+            preLoss, uuPreLoss, salLoss = self.model.calcLosses(self.handler.torchAdj, usr, itmP, itmN,
+                                                                        self.handler.torchuAdj, usr0, usrP, usrN, usr1, usr2)
 
             regLoss = 0
             for W in self.model.parameters():
                 regLoss += W.norm(2).square()
             regLoss *= args.reg
 
-            loss = preLoss + uuPreLoss + salLoss + sslLoss + regLoss
+            loss = preLoss + uuPreLoss + salLoss + regLoss
             epLoss += loss.item()
             epPreLoss += preLoss.item()
             epuuPreLoss += uuPreLoss.item()
             epsalLoss += salLoss.item()
-            epsslLoss += sslLoss.item()
 
             self.opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -147,7 +143,6 @@ class Recommender():
         ret['preLoss'] = epPreLoss / steps
         ret['uuPreLoss'] = epuuPreLoss / steps
         ret['salLoss'] = epsalLoss / steps
-        ret['sslLoss'] = epsslLoss / steps
         return ret
 
     def testEpoch(self):
